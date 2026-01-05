@@ -1,12 +1,11 @@
 #ifndef ZNET_BUFFER_H_
 #define ZNET_BUFFER_H_
 
-#include "allocator.h"
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+
+
 #include <string>
-#include <vector>
 
 namespace znet {
 
@@ -32,9 +31,8 @@ public:
    */
   explicit Buffer(size_t initial_size = kInitialSize);
 
-  ~Buffer() = default;
+  ~Buffer();
 
-  // ========== 容量相关 ==========
 
   /**
    * @brief 可读字节数
@@ -44,7 +42,7 @@ public:
   /**
    * @brief 可写字节数
    */
-  size_t writable_bytes() const { return buffer_.size() - writer_index_; }
+  size_t writable_bytes() const { return capacity_ - writer_index_; }
 
   /**
    * @brief 预留空间字节数
@@ -54,9 +52,8 @@ public:
   /**
    * @brief 总容量
    */
-  size_t capacity() const { return buffer_.size(); }
+  size_t capacity() const { return capacity_; }
 
-  // ========== 读取数据 ==========
 
   /**
    * @brief 获取可读数据起始指针（只读）
@@ -109,8 +106,6 @@ public:
    */
   void retrieve_all();
 
-  // ========== 写入数据 ==========
-
   /**
    * @brief 确保可写空间至少为 len 字节
    */
@@ -151,8 +146,6 @@ public:
    */
   void has_written(size_t len);
 
-  // ========== 查找操作 ==========
-
   /**
    * @brief 查找 CRLF (\r\n)
    * @return CRLF 的起始位置，未找到返回 nullptr
@@ -165,7 +158,6 @@ public:
    */
   const char *find_eol() const;
 
-  // ========== Socket 集成 ==========
 
   /**
    * @brief 从 fd 读取数据到 buffer
@@ -184,7 +176,6 @@ public:
    */
   ssize_t write_fd(int fd, int *saved_errno);
 
-  // ========== 内部辅助 ==========
 
   /**
    * @brief 获取可写区域起始指针
@@ -203,8 +194,8 @@ public:
   void swap(Buffer &rhs);
 
 private:
-  char *begin() { return &*buffer_.begin(); }
-  const char *begin() const { return &*buffer_.begin(); }
+  char *begin() { return buffer_; }
+  const char *begin() const { return buffer_; }
 
   /**
    * @brief 扩容
@@ -212,9 +203,10 @@ private:
   void make_space(size_t len);
 
 private:
-  std::vector<char> buffer_;
-  size_t reader_index_;
-  size_t writer_index_;
+  char *buffer_;        // 缓冲区指针（由 Allocator 分配）
+  size_t capacity_;     // 总容量
+  size_t reader_index_; // 读索引
+  size_t writer_index_; // 写索引
 };
 
 } // namespace znet

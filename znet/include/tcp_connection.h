@@ -3,7 +3,6 @@
 
 #include "address.h"
 #include "buffer.h"
-#include "byte_array.h"
 #include "noncopyable.h"
 #include "socket.h"
 #include <functional>
@@ -27,8 +26,6 @@ using TcpConnectionPtr = std::shared_ptr<TcpConnection>;
 using ConnectionCallback = std::function<void(const TcpConnectionPtr &)>;
 using MessageCallback =
     std::function<void(const TcpConnectionPtr &, Buffer *)>;
-using ByteArrayMessageCallback =
-    std::function<void(const TcpConnectionPtr &, ByteArray::ptr)>;
 using WriteCompleteCallback = std::function<void(const TcpConnectionPtr &)>;
 using CloseCallback = std::function<void(const TcpConnectionPtr &)>;
 
@@ -103,13 +100,6 @@ public:
     message_callback_ = cb;
   }
 
-  /**
-   * @brief 设置消息回调（使用ByteArray）
-   */
-  void set_byte_array_message_callback(const ByteArrayMessageCallback &cb) {
-    byte_array_message_callback_ = cb;
-  }
-
   void set_write_complete_callback(const WriteCompleteCallback &cb) {
     write_complete_callback_ = cb;
   }
@@ -144,11 +134,6 @@ public:
    * @brief 发送 Buffer
    */
   void send(Buffer *buf);
-
-  /**
-   * @brief 发送 ByteArray
-   */
-  void send(ByteArray::ptr byte_array);
 
   /**
    * @brief 关闭连接（只关闭写端）
@@ -248,7 +233,6 @@ private:
   // 回调函数
   ConnectionCallback connection_callback_;
   MessageCallback message_callback_;
-  ByteArrayMessageCallback byte_array_message_callback_;
   WriteCompleteCallback write_complete_callback_;
   CloseCallback close_callback_;
 };

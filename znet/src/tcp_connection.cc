@@ -1,5 +1,4 @@
 #include "tcp_connection.h"
-#include "byte_array.h"
 #include "znet_logger.h"
 #include "io/io_scheduler.h"
 #include <errno.h>
@@ -25,7 +24,6 @@ TcpConnection::~TcpConnection() {
                 socket_->fd(), static_cast<int>(state_));
 }
 
-// ========== 连接管理 ==========
 
 void TcpConnection::connect_established() {
   set_state(State::Connected);
@@ -88,20 +86,6 @@ void TcpConnection::send(Buffer *buf) {
   buf->retrieve_all();
 }
 
-void TcpConnection::send(ByteArray::ptr byte_array) {
-  if (state_ != State::Connected) {
-    ZNET_LOG_WARN("TcpConnection::send [{}] not connected, state={}", name_,
-                  static_cast<int>(state_));
-    return;
-  }
-
-  // 将ByteArray中的数据发送出去
-  std::string data = byte_array->to_string();
-  if (!data.empty()) {
-    send_in_loop(data.data(), data.size());
-  }
-}
-
 void TcpConnection::shutdown() {
   if (state_ == State::Connected) {
     set_state(State::Disconnecting);
@@ -120,8 +104,6 @@ void TcpConnection::set_tcp_no_delay(bool on) { socket_->set_tcp_nodelay(on); }
 
 void TcpConnection::set_keep_alive(bool on) { socket_->set_keep_alive(on); }
 
-// ========== IO 事件处理 ==========
-
 void TcpConnection::handle_read() {
   int saved_errno = 0;
   ssize_t n = input_buffer_.read_fd(socket_->fd(), &saved_errno);
@@ -130,14 +112,6 @@ void TcpConnection::handle_read() {
     // 数据到达，触发消息回调
     if (message_callback_) {
       message_callback_(shared_from_this(), &input_buffer_);
-    }
-    // 如果设置了ByteArray回调，同时触发
-    if (byte_array_message_callback_) {
-      // 将Buffer中的数据转换为ByteArray
-      auto byte_array = std::make_shared<ByteArray>();
-      byte_array->write(input_buffer_.peek(), input_buffer_.readable_bytes());
-      byte_array->set_position(0);  // 重置读取位置
-      byte_array_message_callback_(shared_from_this(), byte_array);
     }
   } else if (n == 0) {
     // 对端关闭连接
@@ -200,7 +174,6 @@ void TcpConnection::handle_error() {
                  strerror(err));
 }
 
-// ========== 私有方法 ==========
 
 void TcpConnection::send_in_loop(const void *data, size_t len) {
   ssize_t n_wrote = 0;

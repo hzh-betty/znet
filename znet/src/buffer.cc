@@ -1,15 +1,13 @@
 #include "buffer.h"
 #include "znet_endian.h"
+#include <algorithm>
 #include <arpa/inet.h>
 #include <cstring>
 #include <errno.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include "allocator.h"
 
-// 为了使用be64toh和htobe64
-#ifdef __linux__
-#include <endian.h>
-#endif
 
 namespace znet {
 
@@ -39,8 +37,20 @@ T network_to_host(T value) {
 } // anonymous namespace
 
 Buffer::Buffer(size_t initial_size)
-    : buffer_(kCheapPrepend + initial_size), reader_index_(kCheapPrepend),
-      writer_index_(kCheapPrepend) {}
+    : buffer_(nullptr), capacity_(kCheapPrepend + initial_size),
+      reader_index_(kCheapPrepend), writer_index_(kCheapPrepend) {
+  buffer_ = static_cast<char *>(Allocator::allocate(capacity_));
+  if (!buffer_) {
+    throw std::bad_alloc();
+  }
+}
+
+Buffer::~Buffer() {
+  if (buffer_) {
+    Allocator::deallocate(buffer_, capacity_);
+    buffer_ = nullptr;
+  }
+}
 
 size_t Buffer::read(void *data, size_t len) {
   size_t readable = readable_bytes();
@@ -175,7 +185,7 @@ ssize_t Buffer::read_fd(int fd, int *saved_errno) {
   } else if (static_cast<size_t>(n) <= writable) {
     writer_index_ += n;
   } else {
-    writer_index_ = buffer_.size();
+    writer_index_ += writable;
     append(extrabuf, n - writable);
   }
 
@@ -198,8 +208,25 @@ void Buffer::make_space(size_t len) {
   // 如果预留空间 + 可写空间 < 需要的空间，则扩容
   // 否则将数据搬移到前面，复用预留空间
   if (writable_bytes() + prependable_bytes() < len + kCheapPrepend) {
-    // 扩容
-    buffer_.resize(writer_index_ + len);
+    // 需要扩容
+    size_t new_capacity = writer_index_ + len;
+    char *new_buffer = static_cast<char *>(Allocator::allocate(new_capacity));
+    if (!new_buffer) {
+      throw std::bad_alloc();
+    }
+    
+    // 复制现有数据
+    size_t readable = readable_bytes();
+    if (readable > 0) {
+      std::copy(begin() + reader_index_, begin() + writer_index_, new_buffer + reader_index_);
+    }
+    
+    // 释放旧缓冲区
+    Allocator::deallocate(buffer_, capacity_);
+    
+    // 更新指针
+    buffer_ = new_buffer;
+    capacity_ = new_capacity;
   } else {
     // 搬移数据
     size_t readable = readable_bytes();
@@ -211,13 +238,37 @@ void Buffer::make_space(size_t len) {
 }
 
 void Buffer::shrink(size_t reserve) {
-  Buffer other(readable_bytes() + reserve);
-  other.append(peek(), readable_bytes());
-  swap(other);
+  size_t readable = readable_bytes();
+  size_t new_capacity = kCheapPrepend + readable + reserve;
+  
+  if (new_capacity >= capacity_) {
+    return; // 无需收缩
+  }
+  
+  char *new_buffer = static_cast<char *>(Allocator::allocate(new_capacity));
+  if (!new_buffer) {
+    return; // 分配失败，不收缩
+  }
+  
+  // 复制数据到新缓冲区
+  if (readable > 0) {
+    std::copy(begin() + reader_index_, begin() + writer_index_,
+              new_buffer + kCheapPrepend);
+  }
+  
+  // 释放旧缓冲区
+  Allocator::deallocate(buffer_, capacity_);
+  
+  // 更新指针
+  buffer_ = new_buffer;
+  capacity_ = new_capacity;
+  reader_index_ = kCheapPrepend;
+  writer_index_ = reader_index_ + readable;
 }
 
 void Buffer::swap(Buffer &rhs) {
-  buffer_.swap(rhs.buffer_);
+  std::swap(buffer_, rhs.buffer_);
+  std::swap(capacity_, rhs.capacity_);
   std::swap(reader_index_, rhs.reader_index_);
   std::swap(writer_index_, rhs.writer_index_);
 }
