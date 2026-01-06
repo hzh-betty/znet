@@ -1,6 +1,6 @@
 #include "socket.h"
-#include "znet_logger.h"
 #include "io/io_scheduler.h"
+#include "znet_logger.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/tcp.h>
@@ -17,8 +17,7 @@ Socket::Socket(int family, int type, int protocol)
   new_sock();
 }
 
-Socket::Socket(int sockfd)
-    : sockfd_(sockfd), is_connected_(false) {
+Socket::Socket(int sockfd) : sockfd_(sockfd), is_connected_(false) {
   // 获取 socket 信息
   socklen_t len = sizeof(family_);
   getsockopt(sockfd_, SOL_SOCKET, SO_DOMAIN, &family_, &len);
@@ -29,8 +28,6 @@ Socket::Socket(int sockfd)
 }
 
 Socket::~Socket() { close(); }
-
-// ========== 创建 Socket 静态工厂方法 ==========
 
 Socket::ptr Socket::create_tcp() {
   return std::make_shared<Socket>(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -51,8 +48,6 @@ Socket::ptr Socket::create_udp() {
 Socket::ptr Socket::create_udp_v6() {
   return std::make_shared<Socket>(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
 }
-
-// ========== 连接管理 ==========
 
 bool Socket::bind(const Address::ptr addr) {
   if (!is_valid()) {
@@ -102,8 +97,7 @@ Socket::ptr Socket::accept() {
 
   sockaddr_storage addr;
   socklen_t len = sizeof(addr);
-  int clientfd =
-      ::accept(sockfd_, reinterpret_cast<sockaddr *>(&addr), &len);
+  int clientfd = ::accept(sockfd_, reinterpret_cast<sockaddr *>(&addr), &len);
 
   if (clientfd == -1) {
     if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -189,8 +183,6 @@ bool Socket::shutdown_write() {
   return true;
 }
 
-// ========== 数据传输 ==========
-
 ssize_t Socket::send(const void *buffer, size_t length, int flags) {
   if (!is_valid()) {
     return -1;
@@ -231,8 +223,6 @@ ssize_t Socket::recv_from(void *buffer, size_t length, Address::ptr from,
 
   return ret;
 }
-
-// ========== Socket 选项配置 ==========
 
 bool Socket::set_send_timeout(uint64_t timeout_ms) {
   struct timeval tv;
@@ -291,8 +281,6 @@ bool Socket::set_non_blocking(bool on) {
   return true;
 }
 
-// ========== 地址查询 ==========
-
 Address::ptr Socket::get_local_address() {
   if (local_address_) {
     return local_address_;
@@ -335,8 +323,6 @@ int Socket::get_error() {
   return error;
 }
 
-// ========== IoScheduler 集成 ==========
-
 bool Socket::cancel_read() {
   zcoroutine::IoScheduler *scheduler = zcoroutine::IoScheduler::get_this();
   if (!scheduler) {
@@ -366,8 +352,6 @@ bool Socket::cancel_all() {
   return scheduler->cancel_all(sockfd_) == 0;
 }
 
-// ========== 私有方法 ==========
-
 void Socket::init_sock() {
   // 设置常用选项
   set_reuse_addr(true);
@@ -387,8 +371,8 @@ bool Socket::new_sock() {
   }
 
   init_sock();
-  ZNET_LOG_DEBUG("Socket::new_sock success: fd={}, family={}, type={}",
-                 sockfd_, family_, type_);
+  ZNET_LOG_DEBUG("Socket::new_sock success: fd={}, family={}, type={}", sockfd_,
+                 family_, type_);
   return true;
 }
 

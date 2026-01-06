@@ -9,7 +9,7 @@ namespace znet {
 // ========== Address静态方法实现 ==========
 
 std::vector<Address::ptr> Address::lookup(const std::string &host,
-                                           uint16_t port, int family) {
+                                          uint16_t port, int family) {
   std::vector<Address::ptr> result;
 
   struct addrinfo hints, *res, *curr;
@@ -20,8 +20,8 @@ std::vector<Address::ptr> Address::lookup(const std::string &host,
   std::string service = std::to_string(port);
   int ret = getaddrinfo(host.c_str(), service.c_str(), &hints, &res);
   if (ret != 0) {
-    ZNET_LOG_ERROR("Address::lookup failed: host={}, port={}, error={}",
-                   host, port, gai_strerror(ret));
+    ZNET_LOG_ERROR("Address::lookup failed: host={}, port={}, error={}", host,
+                   port, gai_strerror(ret));
     return result;
   }
 
@@ -52,12 +52,11 @@ Address::ptr Address::create(const sockaddr *addr, socklen_t addrlen) {
     return std::make_shared<UnixAddress>(
         *reinterpret_cast<const sockaddr_un *>(addr));
   default:
-    ZNET_LOG_ERROR("Address::create unknown address family: {}", addr->sa_family);
+    ZNET_LOG_ERROR("Address::create unknown address family: {}",
+                   addr->sa_family);
     return nullptr;
   }
 }
-
-// ========== IPv4Address实现 ==========
 
 IPv4Address::IPv4Address(const std::string &ip, uint16_t port) {
   memset(&addr_, 0, sizeof(addr_));
@@ -85,8 +84,6 @@ uint16_t IPv4Address::port() const { return ntohs(addr_.sin_port); }
 
 void IPv4Address::set_port(uint16_t port) { addr_.sin_port = htons(port); }
 
-// ========== IPv6Address实现 ==========
-
 IPv6Address::IPv6Address(const std::string &ip, uint16_t port) {
   memset(&addr_, 0, sizeof(addr_));
   addr_.sin6_family = AF_INET6;
@@ -112,8 +109,6 @@ std::string IPv6Address::to_string() const {
 uint16_t IPv6Address::port() const { return ntohs(addr_.sin6_port); }
 
 void IPv6Address::set_port(uint16_t port) { addr_.sin6_port = htons(port); }
-
-// ========== UnixAddress实现 ==========
 
 UnixAddress::UnixAddress(const std::string &path) {
   memset(&addr_, 0, sizeof(addr_));

@@ -1,4 +1,5 @@
 #include "buffer.h"
+#include "allocator.h"
 #include "znet_endian.h"
 #include <algorithm>
 #include <arpa/inet.h>
@@ -6,35 +7,8 @@
 #include <errno.h>
 #include <sys/uio.h>
 #include <unistd.h>
-#include "allocator.h"
-
 
 namespace znet {
-
-// 使用znet_endian定义字节序转换宏
-namespace {
-
-// 主机字节序转网络字节序（大端）
-template <typename T>
-T host_to_network(T value) {
-#if ZNET_BYTE_ORDER == ZNET_LITTLE_ENDIAN
-  return byteswap(value);
-#else
-  return value;
-#endif
-}
-
-// 网络字节序（大端）转主机字节序
-template <typename T>
-T network_to_host(T value) {
-#if ZNET_BYTE_ORDER == ZNET_LITTLE_ENDIAN
-  return byteswap(value);
-#else
-  return value;
-#endif
-}
-
-} // anonymous namespace
 
 Buffer::Buffer(size_t initial_size)
     : buffer_(nullptr), capacity_(kCheapPrepend + initial_size),
@@ -115,7 +89,6 @@ void Buffer::retrieve_all() {
   writer_index_ = kCheapPrepend;
 }
 
-
 void Buffer::ensure_writable_bytes(size_t len) {
   if (writable_bytes() < len) {
     make_space(len);
@@ -150,19 +123,17 @@ void Buffer::write_int64(int64_t x) {
 
 void Buffer::has_written(size_t len) { writer_index_ += len; }
 
-
 const char *Buffer::find_crlf() const {
   const char crlf_pattern[] = "\r\n";
-  const char *crlf = std::search(peek(), begin_write(), crlf_pattern, crlf_pattern + 2);
+  const char *crlf =
+      std::search(peek(), begin_write(), crlf_pattern, crlf_pattern + 2);
   return crlf == begin_write() ? nullptr : crlf;
 }
 
 const char *Buffer::find_eol() const {
-  const char *eol =
-      std::find(peek(), begin_write(), '\n');
+  const char *eol = std::find(peek(), begin_write(), '\n');
   return eol == begin_write() ? nullptr : eol;
 }
-
 
 ssize_t Buffer::read_fd(int fd, int *saved_errno) {
   // 使用 readv 配合栈上缓冲区，减少系统调用和内存分配
@@ -202,8 +173,6 @@ ssize_t Buffer::write_fd(int fd, int *saved_errno) {
   return n;
 }
 
-// ========== 内部辅助 ==========
-
 void Buffer::make_space(size_t len) {
   // 如果预留空间 + 可写空间 < 需要的空间，则扩容
   // 否则将数据搬移到前面，复用预留空间
@@ -214,16 +183,17 @@ void Buffer::make_space(size_t len) {
     if (!new_buffer) {
       throw std::bad_alloc();
     }
-    
+
     // 复制现有数据
     size_t readable = readable_bytes();
     if (readable > 0) {
-      std::copy(begin() + reader_index_, begin() + writer_index_, new_buffer + reader_index_);
+      std::copy(begin() + reader_index_, begin() + writer_index_,
+                new_buffer + reader_index_);
     }
-    
+
     // 释放旧缓冲区
     Allocator::deallocate(buffer_, capacity_);
-    
+
     // 更新指针
     buffer_ = new_buffer;
     capacity_ = new_capacity;
@@ -240,25 +210,25 @@ void Buffer::make_space(size_t len) {
 void Buffer::shrink(size_t reserve) {
   size_t readable = readable_bytes();
   size_t new_capacity = kCheapPrepend + readable + reserve;
-  
+
   if (new_capacity >= capacity_) {
     return; // 无需收缩
   }
-  
+
   char *new_buffer = static_cast<char *>(Allocator::allocate(new_capacity));
   if (!new_buffer) {
     return; // 分配失败，不收缩
   }
-  
+
   // 复制数据到新缓冲区
   if (readable > 0) {
     std::copy(begin() + reader_index_, begin() + writer_index_,
               new_buffer + kCheapPrepend);
   }
-  
+
   // 释放旧缓冲区
   Allocator::deallocate(buffer_, capacity_);
-  
+
   // 更新指针
   buffer_ = new_buffer;
   capacity_ = new_capacity;

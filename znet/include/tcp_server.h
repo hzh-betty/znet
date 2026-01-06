@@ -8,10 +8,7 @@
 #include <string>
 #include <vector>
 
-// 前置声明
-namespace zcoroutine {
-class IoScheduler;
-}
+#include "io/io_scheduler.h"
 
 namespace znet {
 
@@ -25,10 +22,11 @@ public:
   /**
    * @brief 构造函数
    * @param io_worker socket 客户端工作的协程调度器
-   * @param accept_worker 服务器 socket 执行接收 socket 连接的协程调度器
+   * @param accept_worker 服务器 socket 执行接收 socket
+   * 连接的协程调度器（默认创建单线程调度器）
    */
-  TcpServer(zcoroutine::IoScheduler *io_worker = nullptr,
-            zcoroutine::IoScheduler *accept_worker = nullptr);
+  TcpServer(zcoroutine::IoScheduler::ptr io_worker,
+            zcoroutine::IoScheduler::ptr accept_worker = nullptr);
 
   /**
    * @brief 析构函数
@@ -39,7 +37,7 @@ public:
    * @brief 绑定地址
    * @return 返回是否绑定成功
    */
-  virtual bool bind(Address::ptr addr);
+  bool bind(Address::ptr addr);
 
   /**
    * @brief 绑定地址数组
@@ -47,19 +45,19 @@ public:
    * @param fails 绑定失败的地址
    * @return 是否绑定成功
    */
-  virtual bool bind(const std::vector<Address::ptr> &addrs,
-                    std::vector<Address::ptr> &fails);
+  bool bind(const std::vector<Address::ptr> &addrs,
+            std::vector<Address::ptr> &fails);
 
   /**
    * @brief 启动服务
    * @pre 需要 bind 成功后执行
    */
-  virtual bool start();
+  bool start();
 
   /**
    * @brief 停止服务
    */
-  virtual void stop();
+  void stop();
 
   /**
    * @brief 返回读取超时时间(毫秒)
@@ -89,14 +87,9 @@ public:
   /**
    * @brief 以字符串形式 dump server 信息
    */
-  virtual std::string to_string(const std::string &prefix = "");
+  std::string to_string(const std::string &prefix = "");
 
 protected:
-  /**
-   * @brief 处理新连接的 Socket 类
-   */
-  virtual void handle_client(Socket::ptr client);
-
   /**
    * @brief 处理新连接的 TcpConnection
    */
@@ -105,16 +98,17 @@ protected:
   /**
    * @brief 开始接受连接
    */
-  virtual void start_accept(Socket::ptr sock);
+  void start_accept(Socket::ptr sock);
 
 protected:
-  std::vector<Socket::ptr> socks_;           // 监听 Socket 数组
-  zcoroutine::IoScheduler *io_worker_;       // 新连接的 Socket 工作的调度器
-  zcoroutine::IoScheduler *accept_worker_;   // 服务器 Socket 接收连接的调度器
-  uint64_t recv_timeout_;                    // 接收超时时间(毫秒)
-  std::string name_;                         // 服务器名称
-  std::string type_;                         // 服务器类型
-  bool is_stop_;                             // 服务是否停止
+  std::vector<Socket::ptr> socks_;         // 监听 Socket 数组
+  zcoroutine::IoScheduler::ptr io_worker_; // 新连接的 Socket 工作的调度器
+  zcoroutine::IoScheduler::ptr
+      accept_worker_; // 服务器 Socket 接收连接的调度器（默认单线程）
+  uint64_t recv_timeout_; // 接收超时时间(毫秒)
+  std::string name_;      // 服务器名称
+  std::string type_;      // 服务器类型
+  bool is_stop_;          // 服务是否停止
 };
 
 } // namespace znet

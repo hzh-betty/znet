@@ -14,15 +14,15 @@ zlog::Logger::ptr get_logger();
 } // namespace znet
 
 // 便利的日志宏定义
-#define ZNET_LOG_DEBUG(fmt, ...)                                         \
+#define ZNET_LOG_DEBUG(fmt, ...)                                               \
   znet::get_logger()->ZLOG_DEBUG(fmt, ##__VA_ARGS__)
-#define ZNET_LOG_INFO(fmt, ...)                                          \
+#define ZNET_LOG_INFO(fmt, ...)                                                \
   znet::get_logger()->ZLOG_INFO(fmt, ##__VA_ARGS__)
-#define ZNET_LOG_WARN(fmt, ...)                                          \
+#define ZNET_LOG_WARN(fmt, ...)                                                \
   znet::get_logger()->ZLOG_WARN(fmt, ##__VA_ARGS__)
-#define ZNET_LOG_ERROR(fmt, ...)                                         \
+#define ZNET_LOG_ERROR(fmt, ...)                                               \
   znet::get_logger()->ZLOG_ERROR(fmt, ##__VA_ARGS__)
-#define ZNET_LOG_FATAL(fmt, ...)                                         \
+#define ZNET_LOG_FATAL(fmt, ...)                                               \
   znet::get_logger()->ZLOG_FATAL(fmt, ##__VA_ARGS__)
 
 #endif // ZCOROUTINE_LOGGER_H_

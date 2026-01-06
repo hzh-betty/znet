@@ -16,7 +16,8 @@ void *Allocator::allocate(size_t size) {
   // 2. 避免触发大量 page fault
   void *ptr = malloc(size);
   if (!ptr) {
-    ZNET_LOG_ERROR("Allocator::allocate malloc failed: requested_size={}", size);
+    ZNET_LOG_ERROR("Allocator::allocate malloc failed: requested_size={}",
+                   size);
     return nullptr;
   }
 

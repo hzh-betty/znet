@@ -1,16 +1,19 @@
 #include "tcp_server.h"
-#include "znet_logger.h"
 #include "io/io_scheduler.h"
 #include "runtime/fiber_pool.h"
+#include "znet_logger.h"
 #include <errno.h>
 #include <sstream>
 #include <string.h>
 
 namespace znet {
 
-TcpServer::TcpServer(zcoroutine::IoScheduler *io_worker,
-                     zcoroutine::IoScheduler *accept_worker)
-    : io_worker_(io_worker), accept_worker_(accept_worker),
+TcpServer::TcpServer(zcoroutine::IoScheduler::ptr io_worker,
+                     zcoroutine::IoScheduler::ptr accept_worker)
+    : io_worker_(io_worker),
+      accept_worker_(accept_worker ? accept_worker
+                                   : std::make_shared<zcoroutine::IoScheduler>(
+                                         1, "TcpServer-Accept", false)),
       recv_timeout_(60 * 1000 * 2), // 默认 2 分钟
       name_("znet/1.0.0"), type_("tcp"), is_stop_(true) {}
 
@@ -62,8 +65,8 @@ bool TcpServer::bind(const std::vector<Address::ptr> &addrs,
   }
 
   for (auto &i : socks_) {
-    ZNET_LOG_INFO("TcpServer type={} name={} bind success: fd={} addr={}", type_,
-                  name_, i->fd(), i->get_local_address()->to_string());
+    ZNET_LOG_INFO("TcpServer type={} name={} bind success: fd={} addr={}",
+                  type_, name_, i->fd(), i->get_local_address()->to_string());
   }
   return true;
 }
@@ -83,15 +86,13 @@ void TcpServer::start_accept(Socket::ptr sock) {
       std::string conn_name = name_ + "-" + peer_addr->to_string();
 
       TcpConnectionPtr conn = std::make_shared<TcpConnection>(
-          conn_name, client->fd(), local_addr, peer_addr, io_worker_);
+          conn_name, client->fd(), local_addr, peer_addr, io_worker_.get());
 
       // 处理连接 - 使用协程池创建协程
       if (io_worker_) {
         auto self = shared_from_this();
         auto fiber = zcoroutine::FiberPool::get_instance().get_fiber(
-            [self, conn]() {
-              self->handle_client(conn);
-            });
+            [self, conn]() { self->handle_client(conn); });
         io_worker_->schedule(std::move(fiber));
       } else {
         handle_client(conn);
@@ -111,21 +112,27 @@ bool TcpServer::start() {
   }
   is_stop_ = false;
 
+  // 启动 io_worker_
+  if (io_worker_) {
+    io_worker_->start();
+  }
+
+  // 启动 accept_worker_
+  if (accept_worker_) {
+    accept_worker_->start();
+  }
+
   for (auto &sock : socks_) {
     if (accept_worker_) {
       // 使用协程池创建协程用于接受连接
       auto self = shared_from_this();
       auto fiber = zcoroutine::FiberPool::get_instance().get_fiber(
-          [self, sock]() {
-            self->start_accept(sock);
-          });
+          [self, sock]() { self->start_accept(sock); });
       accept_worker_->schedule(std::move(fiber));
     } else if (io_worker_) {
       auto self = shared_from_this();
       auto fiber = zcoroutine::FiberPool::get_instance().get_fiber(
-          [self, sock]() {
-            self->start_accept(sock);
-          });
+          [self, sock]() { self->start_accept(sock); });
       io_worker_->schedule(std::move(fiber));
     } else {
       ZNET_LOG_ERROR("TcpServer::start no scheduler available");
@@ -157,20 +164,10 @@ void TcpServer::stop() {
   }
 }
 
-void TcpServer::handle_client(Socket::ptr client) {
-  ZNET_LOG_INFO("TcpServer::handle_client fd={} remote={}", client->fd(),
-                client->get_remote_address()->to_string());
-  // 默认实现：什么都不做
-  // 子类应该重写这个方法来处理客户端连接
-}
-
 void TcpServer::handle_client(TcpConnectionPtr conn) {
   ZNET_LOG_INFO("TcpServer::handle_client connection [{}] fd={} remote={}",
                 conn->name(), conn->socket()->fd(),
                 conn->peer_address()->to_string());
-
-  // 建立连接
-  conn->connect_established();
 
   // 默认实现：什么都不做
   // 子类应该重写这个方法来处理客户端连接

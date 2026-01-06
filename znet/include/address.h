@@ -51,7 +51,7 @@ public:
    * @return 地址列表
    */
   static std::vector<Address::ptr> lookup(const std::string &host,
-                                           uint16_t port = 0, int family = 0);
+                                          uint16_t port = 0, int family = 0);
 
   /**
    * @brief 从 sockaddr 创建 Address 对象

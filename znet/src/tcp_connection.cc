@@ -1,6 +1,6 @@
 #include "tcp_connection.h"
-#include "znet_logger.h"
 #include "io/io_scheduler.h"
+#include "znet_logger.h"
 #include <errno.h>
 #include <string.h>
 
@@ -24,7 +24,6 @@ TcpConnection::~TcpConnection() {
                 socket_->fd(), static_cast<int>(state_));
 }
 
-
 void TcpConnection::connect_established() {
   set_state(State::Connected);
 
@@ -33,9 +32,9 @@ void TcpConnection::connect_established() {
 
   // 注册读事件到IoScheduler
   if (io_scheduler_) {
-    io_scheduler_->add_event(socket_->fd(), zcoroutine::FdContext::kRead,
-                             std::bind(&TcpConnection::handle_read,
-                                       shared_from_this()));
+    io_scheduler_->add_event(
+        socket_->fd(), zcoroutine::FdContext::kRead,
+        std::bind(&TcpConnection::handle_read, shared_from_this()));
   }
 
   // 触发连接建立回调
@@ -174,7 +173,6 @@ void TcpConnection::handle_error() {
                  strerror(err));
 }
 
-
 void TcpConnection::send_in_loop(const void *data, size_t len) {
   ssize_t n_wrote = 0;
   size_t remaining = len;
@@ -207,9 +205,9 @@ void TcpConnection::send_in_loop(const void *data, size_t len) {
 
     // 注册写事件
     if (io_scheduler_) {
-      io_scheduler_->add_event(socket_->fd(), zcoroutine::FdContext::kWrite,
-                               std::bind(&TcpConnection::handle_write,
-                                         shared_from_this()));
+      io_scheduler_->add_event(
+          socket_->fd(), zcoroutine::FdContext::kWrite,
+          std::bind(&TcpConnection::handle_write, shared_from_this()));
     }
 
     ZNET_LOG_DEBUG("TcpConnection::send_in_loop [{}] buffered {} bytes, total "

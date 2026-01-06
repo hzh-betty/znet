@@ -167,8 +167,7 @@ public:
    * @param option 选项名
    * @param value 选项值
    */
-  template <typename T>
-  bool set_option(int level, int option, const T &value) {
+  template <typename T> bool set_option(int level, int option, const T &value) {
     return setsockopt(sockfd_, level, option, &value, sizeof(T)) == 0;
   }
 

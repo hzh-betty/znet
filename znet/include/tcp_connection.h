@@ -24,8 +24,7 @@ using TcpConnectionPtr = std::shared_ptr<TcpConnection>;
  * @brief TCP 连接回调函数类型
  */
 using ConnectionCallback = std::function<void(const TcpConnectionPtr &)>;
-using MessageCallback =
-    std::function<void(const TcpConnectionPtr &, Buffer *)>;
+using MessageCallback = std::function<void(const TcpConnectionPtr &, Buffer *)>;
 using WriteCompleteCallback = std::function<void(const TcpConnectionPtr &)>;
 using CloseCallback = std::function<void(const TcpConnectionPtr &)>;
 

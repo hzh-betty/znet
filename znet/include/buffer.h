@@ -3,15 +3,14 @@
 
 #include <cstddef>
 #include <cstdint>
-
-
 #include <string>
+
 
 namespace znet {
 
 /**
  * @brief 网络缓冲区，类 muduo Buffer 设计
- * 
+ *
  * 内部结构：
  * +-------------------+------------------+------------------+
  * | prependable bytes |  readable bytes  |  writable bytes  |
@@ -33,7 +32,6 @@ public:
 
   ~Buffer();
 
-
   /**
    * @brief 可读字节数
    */
@@ -53,7 +51,6 @@ public:
    * @brief 总容量
    */
   size_t capacity() const { return capacity_; }
-
 
   /**
    * @brief 获取可读数据起始指针（只读）
@@ -158,7 +155,6 @@ public:
    */
   const char *find_eol() const;
 
-
   /**
    * @brief 从 fd 读取数据到 buffer
    * @param fd 文件描述符
@@ -175,7 +171,6 @@ public:
    * @return 写入的字节数，-1 表示错误
    */
   ssize_t write_fd(int fd, int *saved_errno);
-
 
   /**
    * @brief 获取可写区域起始指针
