@@ -2,7 +2,7 @@
 #define ZNET_TCP_CONNECTION_H_
 
 #include "address.h"
-#include "buffer.h"
+#include "buff.h"
 #include "noncopyable.h"
 #include "socket.h"
 #include <functional>

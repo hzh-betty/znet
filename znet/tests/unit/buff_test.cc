@@ -1,9 +1,9 @@
 /**
- * @file buffer_test.cc
+ * @file buf_test.cc
  * @brief Buffer 单元测试
  */
 
-#include "buffer.h"
+#include "buff.h"
 #include "znet_logger.h"
 #include <gtest/gtest.h>
 #include <cstring>
