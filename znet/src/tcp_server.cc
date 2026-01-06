@@ -18,10 +18,8 @@ TcpServer::TcpServer(zcoroutine::IoScheduler::ptr io_worker,
       name_("znet/1.0.0"), type_("tcp"), is_stop_(true) {}
 
 TcpServer::~TcpServer() {
-  for (auto &i : socks_) {
-    i->close();
-  }
-  socks_.clear();
+  // 确保服务器已停止（stop() 会处理关闭和停止 accept_worker_）
+  stop();
 }
 
 bool TcpServer::bind(Address::ptr addr) {
@@ -143,24 +141,30 @@ bool TcpServer::start() {
 }
 
 void TcpServer::stop() {
+  if (is_stop_) {
+    return; // 已经停止
+  }
   is_stop_ = true;
-  auto self = shared_from_this();
 
-  auto stop_func = [this, self]() {
-    for (auto &sock : socks_) {
-      sock->close();
-    }
-    socks_.clear();
-  };
-
+  // 先取消所有 socket 上的事件，唤醒等待中的协程
+  // 注意：必须使用 accept_worker_ 来取消事件，因为 accept 协程在 accept_worker_ 中运行
   if (accept_worker_) {
-    auto fiber = zcoroutine::FiberPool::get_instance().get_fiber(stop_func);
-    accept_worker_->schedule(std::move(fiber));
-  } else if (io_worker_) {
-    auto fiber = zcoroutine::FiberPool::get_instance().get_fiber(stop_func);
-    io_worker_->schedule(std::move(fiber));
-  } else {
-    stop_func();
+    for (auto &sock : socks_) {
+      if (sock->is_valid()) {
+        accept_worker_->cancel_all(sock->fd());
+      }
+    }
+  }
+
+  // 关闭所有 socket
+  for (auto &sock : socks_) {
+    sock->close();
+  }
+  socks_.clear();
+
+  // 停止 accept_worker_（同步等待完成）
+  if (accept_worker_) {
+    accept_worker_->stop();
   }
 }
 

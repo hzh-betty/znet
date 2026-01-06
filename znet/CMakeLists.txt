@@ -70,3 +70,6 @@ message(STATUS "Source files      : ${ZNET_SOURCES}")
 message(STATUS "Shared Library    : znet_shared")
 message(STATUS "Static Library    : znet_static")
 message(STATUS "==============================")
+
+# 添加测试子目录
+add_subdirectory(tests)

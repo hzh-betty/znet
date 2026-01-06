@@ -10,6 +10,9 @@
 
 namespace znet {
 
+const size_t Buffer::kCheapPrepend;
+const size_t Buffer::kInitialSize;
+
 Buffer::Buffer(size_t initial_size)
     : buffer_(nullptr), capacity_(kCheapPrepend + initial_size),
       reader_index_(kCheapPrepend), writer_index_(kCheapPrepend) {

@@ -6,8 +6,9 @@
 namespace znet {
 
 /**
- * @brief 初始化znet专属日志器
+ * @brief 初始化znet专属日志器（同时初始化zcoroutine日志器）
  * @param level 日志级别，默认为DEBUG
+ * @note 该函数会同时初始化 znet 和 zcoroutine 两个日志系统
  */
 void init_logger(zlog::LogLevel::value level = zlog::LogLevel::value::DEBUG);
 zlog::Logger::ptr get_logger();

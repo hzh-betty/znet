@@ -1,5 +1,6 @@
 #include "socket.h"
 #include "io/io_scheduler.h"
+#include "io/status_table.h"
 #include "znet_logger.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -369,6 +370,12 @@ bool Socket::new_sock() {
                    family_, type_, protocol_, errno, strerror(errno));
     return false;
   }
+
+  // 主动注册 fd 到 StatusTable，确保 hook 能正常工作
+  // 这是必要的，因为 Socket 可能在主线程（hook 未启用）创建
+  // 但之后在协程中使用（hook 启用）
+  auto status_table = zcoroutine::StatusTable::GetInstance();
+  status_table->get(sockfd_, true); // auto_create = true
 
   init_sock();
   ZNET_LOG_DEBUG("Socket::new_sock success: fd={}, family={}, type={}", sockfd_,

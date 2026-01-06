@@ -24,13 +24,16 @@ else()
     message(STATUS "Build type: Release with optimizations")
 endif()
 
-# 输出目录配置
-set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
-set(LIBRARY_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/lib)
+# 输出目录配置（输出到build目录下）
+set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
+set(LIBRARY_OUTPUT_PATH ${PROJECT_BINARY_DIR}/lib)
 
 # 查找依赖
 find_package(Threads REQUIRED)
 find_package(fmt REQUIRED CONFIG)
+
+# 启用测试支持
+enable_testing()
 
 # 添加子项目
 message(STATUS "==============================")
@@ -41,10 +44,9 @@ message(STATUS "Build Type        : ${CMAKE_BUILD_TYPE}")
 message(STATUS "Compiler          : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "==============================")
 
-# 构建顺序：zlog -> zcoroutine -> znet -> examples
+# 构建顺序：zlog -> zcoroutine -> znet
 add_subdirectory(zlog)
 add_subdirectory(zcoroutine)
 add_subdirectory(znet)
-add_subdirectory(examples)
 
 message(STATUS "All subprojects configured successfully")
