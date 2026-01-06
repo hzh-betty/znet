@@ -291,7 +291,7 @@ TEST_F(TimerTest, ConcurrentAddTimer) {
   std::vector<std::thread> threads;
 
   for (int t = 0; t < thread_num; ++t) {
-    threads.emplace_back([this, &total_count, timers_per_thread]() {
+    threads.emplace_back([this, &total_count]() {
       for (int i = 0; i < timers_per_thread; ++i) {
         manager_->add_timer(100, [&total_count]() { total_count++; }, false);
       }

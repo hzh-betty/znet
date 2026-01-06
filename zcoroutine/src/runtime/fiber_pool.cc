@@ -32,17 +32,10 @@ Fiber::ptr FiberPool::get_fiber(std::function<void()> func, size_t stack_size,
 
     // 查找栈大小匹配的协程
     auto it = std::find_if(pool_.begin(), pool_.end(),
-                           [stack_size, use_shared_stack](const Fiber::ptr &f) {
+                           [use_shared_stack](const Fiber::ptr &f) {
                              // 检查栈模式是否匹配
-                             bool stack_mode_match =
-                                 (use_shared_stack && f->is_shared_stack()) ||
-                                 (!use_shared_stack && !f->is_shared_stack());
-
-                             if (use_shared_stack) {
-                               return stack_mode_match;
-                             } else {
-                               return stack_mode_match;
-                             }
+                             return (use_shared_stack && f->is_shared_stack()) ||
+                                    (!use_shared_stack && !f->is_shared_stack());
                            });
 
     if (it != pool_.end()) {

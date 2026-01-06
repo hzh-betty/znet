@@ -224,6 +224,7 @@ TEST_F(FdContextTest, AddSameEventTwice) {
 
   // 第二次添加应该被忽略或返回错误
   int result = ctx1_->add_event(FdContext::kRead);
+  EXPECT_EQ(result, FdContext::kRead);
 
   // 事件应该保持不变
   EXPECT_EQ(ctx1_->events() & FdContext::kRead, FdContext::kRead);
@@ -234,6 +235,7 @@ TEST_F(FdContextTest, DelNonexistentEvent) {
   EXPECT_EQ(ctx1_->events(), FdContext::kNone);
 
   int result = ctx1_->del_event(FdContext::kRead);
+  EXPECT_EQ(result, FdContext::kNone);
 
   EXPECT_EQ(ctx1_->events(), FdContext::kNone);
 }

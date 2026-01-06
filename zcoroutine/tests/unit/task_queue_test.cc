@@ -226,7 +226,7 @@ TEST_F(TaskQueueTest, MultiProducerSingleConsumer) {
 
   // 启动生产者
   for (int p = 0; p < producer_num; ++p) {
-    producers.emplace_back([this, tasks_per_producer]() {
+    producers.emplace_back([this]() {
       for (int i = 0; i < tasks_per_producer; ++i) {
         queue_->push(Task([]() {}));
       }
@@ -307,7 +307,7 @@ TEST_F(TaskQueueTest, MultiProducerMultiConsumer) {
 
   // 启动生产者
   for (int p = 0; p < producer_num; ++p) {
-    threads.emplace_back([this, &produced, tasks_per_producer]() {
+    threads.emplace_back([this, &produced]() {
       for (int i = 0; i < tasks_per_producer; ++i) {
         queue_->push(Task([]() {}));
         produced.fetch_add(1);
@@ -348,7 +348,7 @@ TEST_F(TaskQueueTest, SingleTaskSize) {
 TEST_F(TaskQueueTest, ManyTasksSize) {
   const int count = 1000;
   for (int i = 0; i < count; ++i) {
-    queue_->push(Task([i]() {}));
+    queue_->push(Task([]() {}));
   }
   EXPECT_EQ(queue_->size(), count);
 }
@@ -356,7 +356,7 @@ TEST_F(TaskQueueTest, ManyTasksSize) {
 // 测试16：pop后size减少
 TEST_F(TaskQueueTest, PopReducesSize) {
   for (int i = 0; i < 10; ++i) {
-    queue_->push(Task([i]() {}));
+    queue_->push(Task([]() {}));
   }
 
   EXPECT_EQ(queue_->size(), 10);
@@ -428,7 +428,7 @@ TEST_F(TaskQueueTest, RapidPushPop) {
   std::atomic<int> consumed{0};
 
   // 启动消费者线程
-  std::thread consumer([this, &consumed, iterations]() {
+  std::thread consumer([this, &consumed]() {
     for (int i = 0; i < iterations; ++i) {
       Task task;
       if (queue_->pop(task) && task.is_valid()) {
@@ -439,7 +439,7 @@ TEST_F(TaskQueueTest, RapidPushPop) {
 
   // 快速生产任务
   for (int i = 0; i < iterations; ++i) {
-    queue_->push(Task([i]() {}));
+    queue_->push(Task([]() { std::this_thread::sleep_for(std::chrono::microseconds(1)); }));
   }
 
   consumer.join();
@@ -453,14 +453,14 @@ TEST_F(TaskQueueTest, BatchPushThenBatchPop) {
 
   // 批量push
   for (int i = 0; i < batch_size; ++i) {
-    queue_->push(Task([i]() {}));
+    queue_->push(Task([]() { std::this_thread::sleep_for(std::chrono::microseconds(1)); }));
   }
 
   EXPECT_EQ(queue_->size(), batch_size);
 
   // 批量pop（使用线程避免阻塞）
   std::atomic<int> popped_count{0};
-  std::thread consumer([this, &popped_count, batch_size]() {
+  std::thread consumer([this, &popped_count]() {
     for (int i = 0; i < batch_size; ++i) {
       Task task;
       if (queue_->pop(task)) {
@@ -482,13 +482,13 @@ TEST_F(TaskQueueTest, ConcurrentPop) {
 
   // 添加任务
   for (int i = 0; i < task_count; ++i) {
-    queue_->push(Task([i]() {}));
+    queue_->push(Task([]() { std::this_thread::sleep_for(std::chrono::microseconds(1)); }));
   }
 
   // 并发pop
   std::vector<std::thread> threads;
   for (int t = 0; t < thread_num; ++t) {
-    threads.emplace_back([this, &successful_pops, task_count, thread_num]() {
+    threads.emplace_back([this, &successful_pops]() {
       // 每个线程尝试pop一定数量的任务
       int expected_per_thread = task_count / thread_num + 1;
       for (int i = 0; i < expected_per_thread; ++i) {

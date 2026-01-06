@@ -582,7 +582,7 @@ TEST_F(HookIntegrationTest, ConcurrentSocketIo) {
   std::atomic<int> completed{0};
 
   for (int i = 0; i < pair_count; ++i) {
-    auto fiber = std::make_shared<Fiber>([&, i]() {
+    auto fiber = std::make_shared<Fiber>([&]() {
       set_hook_enable(true);
       int socks[2];
       if (socketpair(AF_UNIX, SOCK_STREAM, 0, socks) != 0) {
@@ -821,7 +821,8 @@ TEST_F(HookIntegrationTest, RecvmsgSendmsgHook) {
     struct iovec iov;
     iov.iov_base = (void *)msg;
     iov.iov_len = strlen(msg);
-    struct msghdr mh = {0};
+    struct msghdr mh;
+    memset(&mh, 0, sizeof(mh));
     mh.msg_iov = &iov;
     mh.msg_iovlen = 1;
 
@@ -837,7 +838,8 @@ TEST_F(HookIntegrationTest, RecvmsgSendmsgHook) {
     struct iovec iov;
     iov.iov_base = buf;
     iov.iov_len = sizeof(buf);
-    struct msghdr mh = {0};
+    struct msghdr mh;
+    memset(&mh, 0, sizeof(mh));
     mh.msg_iov = &iov;
     mh.msg_iovlen = 1;
 

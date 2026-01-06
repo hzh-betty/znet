@@ -492,7 +492,7 @@ TEST_F(FiberTest, LongRunningFiber) {
   const int iterations = 10000;
   int count = 0;
 
-  auto fiber = std::make_shared<Fiber>([&count, iterations]() {
+  auto fiber = std::make_shared<Fiber>([&count]() {
     for (int i = 0; i < iterations; ++i) {
       count++;
     }
@@ -508,7 +508,7 @@ TEST_F(FiberTest, ManyYields) {
   const int yield_count = 1000;
   int counter = 0;
 
-  auto fiber = std::make_shared<Fiber>([&counter, yield_count]() {
+  auto fiber = std::make_shared<Fiber>([&counter]() {
     for (int i = 0; i < yield_count; ++i) {
       counter++;
       Fiber::yield();

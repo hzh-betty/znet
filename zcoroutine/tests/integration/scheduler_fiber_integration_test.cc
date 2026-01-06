@@ -157,6 +157,7 @@ TEST_F(SchedulerFiberIntegrationTest, HighLoadScheduling) {
       for (int j = 0; j < 100; ++j) {
         sum += j;
       }
+      (void)sum;
       completed.fetch_add(1);
     });
   }

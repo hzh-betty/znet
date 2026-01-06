@@ -651,7 +651,7 @@ TEST_F(SharedStackTest, SharedStackManyYields) {
   const int yield_count = 500;
   int counter = 0;
 
-  auto fiber = std::make_shared<Fiber>([&counter, yield_count]() {
+  auto fiber = std::make_shared<Fiber>([&counter]() {
     for (int i = 0; i < yield_count; ++i) {
       counter++;
       Fiber::yield();

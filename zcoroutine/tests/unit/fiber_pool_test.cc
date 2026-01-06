@@ -78,6 +78,7 @@ TEST_F(FiberPoolTest, ReuseFiber) {
   int count = 0;
   auto fiber2 = pool.get_fiber([&count]() { count++; });
 
+  EXPECT_EQ(fiber2->id(), fiber1_id); // 验证 ID 相同表示复用了同一个对象
   EXPECT_EQ(pool.size(), 0); // 获取后池应该为空
 
   fiber2->resume();
@@ -272,7 +273,7 @@ TEST_F(FiberPoolTest, ConcurrentGetReturn) {
   std::atomic<int> total_executed{0};
 
   for (int t = 0; t < thread_count; ++t) {
-    threads.emplace_back([&pool, &total_executed, operations_per_thread]() {
+    threads.emplace_back([&pool, &total_executed]() {
       for (int i = 0; i < operations_per_thread; ++i) {
         auto fiber = pool.get_fiber([&total_executed]() {
           total_executed.fetch_add(1, std::memory_order_relaxed);
