@@ -6,6 +6,34 @@
 
 namespace znet {
 
+/**
+ * @brief RAII锁守护，用于Spinlock
+ */
+class SpinlockGuard {
+public:
+  explicit SpinlockGuard(zcoroutine::Spinlock &lock) : lock_(lock) {
+    lock_.lock();
+  }
+  ~SpinlockGuard() { lock_.unlock(); }
+private:
+  zcoroutine::Spinlock &lock_;
+};
+
+const char* TcpConnection::state_to_string(State s) {
+  switch (s) {
+    case State::Connecting:
+      return "Connecting";
+    case State::Connected:
+      return "Connected";
+    case State::Disconnecting:
+      return "Disconnecting";
+    case State::Disconnected:
+      return "Disconnected";
+    default:
+      return "Unknown";
+  }
+}
+
 TcpConnection::TcpConnection(const std::string &name, Socket::ptr socket,
                              const Address::ptr &local_addr,
                              const Address::ptr &peer_addr,
@@ -21,7 +49,12 @@ TcpConnection::TcpConnection(const std::string &name, Socket::ptr socket,
 
 TcpConnection::~TcpConnection() {
   ZNET_LOG_INFO("TcpConnection::~TcpConnection [{}] fd={} state={}", name_,
-                socket_->fd(), static_cast<int>(state_));
+                socket_->fd(), state_to_string(state_.load(std::memory_order_acquire)));
+  
+  // 防御性清理：如果连接还没有关闭，移除 epoll 事件
+  if (io_scheduler_ && !disconnected()) {
+    socket_->close();
+  }
 }
 
 void TcpConnection::connect_established() {
@@ -52,36 +85,11 @@ void TcpConnection::connect_established() {
                 socket_->fd());
 }
 
-void TcpConnection::connect_destroyed() {
-  // 避免重复清理
-  if (state_ == State::Disconnected) {
-    // 已经通过 handle_close 清理过了
-    ZNET_LOG_DEBUG("TcpConnection::connect_destroyed [{}] already disconnected", name_);
-    return;
-  }
-
-  set_state(State::Disconnected);
-
-  // 触发连接断开回调（异步调度）
-  if (connection_callback_ && io_scheduler_) {
-    std::weak_ptr<TcpConnection> weak_self = shared_from_this();
-    auto cb = connection_callback_;
-    io_scheduler_->schedule([weak_self, cb]() {
-      if (auto self = weak_self.lock()) {
-        cb(self);
-      }
-    });
-  }
-
-  socket_->close();
-  ZNET_LOG_INFO("TcpConnection::connect_destroyed [{}] fd={}", name_,
-                socket_->fd());
-}
 
 void TcpConnection::send(const void *data, size_t len) {
-  if (state_ != State::Connected) {
+  if (state_.load(std::memory_order_acquire) != State::Connected) {
     ZNET_LOG_WARN("TcpConnection::send [{}] not connected, state={}", name_,
-                  static_cast<int>(state_));
+                  state_to_string(state_.load(std::memory_order_acquire)));
     return;
   }
 
@@ -98,15 +106,17 @@ void TcpConnection::send(Buffer *buf) {
 }
 
 void TcpConnection::shutdown() {
-  if (state_ == State::Connected) {
-    set_state(State::Disconnecting);
+  State expected = State::Connected;
+  if (state_.compare_exchange_strong(expected, State::Disconnecting,
+                                      std::memory_order_acq_rel)) {
     shutdown_in_loop();
   }
 }
 
 void TcpConnection::force_close() {
-  if (state_ == State::Connected || state_ == State::Disconnecting) {
-    set_state(State::Disconnecting);
+  State current = state_.load(std::memory_order_acquire);
+  if (current == State::Connected || current == State::Disconnecting) {
+    state_.store(State::Disconnecting, std::memory_order_release);
     force_close_in_loop();
   }
 }
@@ -124,10 +134,8 @@ void TcpConnection::handle_read() {
     if (message_callback_ && io_scheduler_) {
       std::weak_ptr<TcpConnection> weak_self = shared_from_this();
       auto cb = message_callback_;
-      // 将数据从 input_buffer_ 移动到临时 buffer，避免异步回调时 buffer 已变
       auto buf = std::make_shared<Buffer>();
-      buf->append(input_buffer_.peek(), input_buffer_.readable_bytes());
-      input_buffer_.retrieve_all();
+      buf->swap(input_buffer_);
       io_scheduler_->schedule([weak_self, cb, buf]() {
         if (auto self = weak_self.lock()) {
           cb(self, buf.get());
@@ -154,10 +162,17 @@ void TcpConnection::handle_write() {
   }
 
   int saved_errno = 0;
-  ssize_t n = output_buffer_.write_fd(socket_->fd(), &saved_errno);
+  ssize_t n = 0;
+  size_t remaining = 0;
+  
+  {
+    SpinlockGuard lock(output_buffer_lock_);
+    n = output_buffer_.write_fd(socket_->fd(), &saved_errno);
+    remaining = output_buffer_.readable_bytes();
+  }
 
   if (n > 0) {
-    if (output_buffer_.readable_bytes() == 0) {
+    if (remaining == 0) {
       // 数据全部发送完成，取消写事件
       if (io_scheduler_) {
         io_scheduler_->del_event(socket_->fd(), zcoroutine::FdContext::kWrite);
@@ -174,7 +189,7 @@ void TcpConnection::handle_write() {
         });
       }
 
-      if (state_ == State::Disconnecting) {
+      if (state_.load(std::memory_order_acquire) == State::Disconnecting) {
         // 如果正在断开连接，且数据已发送完成，则关闭写端
         shutdown_in_loop();
       }
@@ -186,12 +201,13 @@ void TcpConnection::handle_write() {
 
 void TcpConnection::handle_close() {
   // 避免重复关闭
-  if (state_ == State::Disconnected) {
+  State current = state_.load(std::memory_order_acquire);
+  if (current == State::Disconnected) {
     return;
   }
 
   ZNET_LOG_INFO("TcpConnection::handle_close [{}] state={}", name_,
-                static_cast<int>(state_));
+                state_to_string(current));
 
   set_state(State::Disconnected);
 
@@ -223,6 +239,8 @@ void TcpConnection::send_in_loop(const void *data, size_t len) {
   size_t remaining = len;
   bool fault_error = false;
 
+  SpinlockGuard lock(output_buffer_lock_);
+  
   // 如果输出缓冲区没有数据，尝试直接发送
   if (output_buffer_.readable_bytes() == 0) {
     n_wrote = socket_->send(data, len);
@@ -268,6 +286,7 @@ void TcpConnection::send_in_loop(const void *data, size_t len) {
 }
 
 void TcpConnection::shutdown_in_loop() {
+  SpinlockGuard lock(output_buffer_lock_);
   if (output_buffer_.readable_bytes() == 0) {
     // 输出缓冲区为空，可以关闭写端
     socket_->shutdown_write();
@@ -275,7 +294,8 @@ void TcpConnection::shutdown_in_loop() {
 }
 
 void TcpConnection::force_close_in_loop() {
-  if (state_ == State::Connected || state_ == State::Disconnecting) {
+  State current = state_.load(std::memory_order_acquire);
+  if (current == State::Connected || current == State::Disconnecting) {
     handle_close();
   }
 }

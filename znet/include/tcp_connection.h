@@ -5,9 +5,12 @@
 #include "buff.h"
 #include "noncopyable.h"
 #include "socket.h"
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
+
+#include "sync/spinlock.h"
 
 // 前置声明
 namespace zcoroutine {
@@ -77,17 +80,17 @@ public:
   /**
    * @brief 获取连接状态
    */
-  State state() const { return state_; }
+  State state() const { return state_.load(std::memory_order_acquire); }
 
   /**
    * @brief 是否已连接
    */
-  bool connected() const { return state_ == State::Connected; }
+  bool connected() const { return state_.load(std::memory_order_acquire) == State::Connected; }
 
   /**
    * @brief 是否已断开
    */
-  bool disconnected() const { return state_ == State::Disconnected; }
+  bool disconnected() const { return state_.load(std::memory_order_acquire) == State::Disconnected; }
 
   // ========== 回调设置 ==========
 
@@ -111,11 +114,6 @@ public:
    * @brief 连接建立时调用（由 TcpServer 调用）
    */
   void connect_established();
-
-  /**
-   * @brief 连接销毁时调用（由 TcpServer 调用）
-   */
-  void connect_destroyed();
 
   /**
    * @brief 发送数据
@@ -196,11 +194,16 @@ public:
    */
   zcoroutine::IoScheduler *io_scheduler() { return io_scheduler_; }
 
+  /**
+   * @brief 将状态转换为字符串
+   */
+  static const char* state_to_string(State s);
+
 private:
   /**
-   * @brief 设置连接状态
+   * @brief 设置连接状态（线程安全）
    */
-  void set_state(State s) { state_ = s; }
+  void set_state(State s) { state_.store(s, std::memory_order_release); }
 
   /**
    * @brief 在 IO 线程中发送数据
@@ -218,16 +221,17 @@ private:
   void force_close_in_loop();
 
 private:
-  std::string name_;        // 连接名称
-  State state_;             // 连接状态
-  Socket::ptr socket_;      // Socket 对象
-  Address::ptr local_addr_; // 本地地址
-  Address::ptr peer_addr_;  // 对端地址
+  std::string name_;                // 连接名称
+  std::atomic<State> state_;        // 连接状态（原子变量保证线程安全）
+  Socket::ptr socket_;              // Socket 对象
+  Address::ptr local_addr_;         // 本地地址
+  Address::ptr peer_addr_;          // 对端地址
 
   zcoroutine::IoScheduler *io_scheduler_; // IO调度器
 
-  Buffer input_buffer_;  // 输入缓冲区
-  Buffer output_buffer_; // 输出缓冲区
+  Buffer input_buffer_;             // 输入缓冲区
+  Buffer output_buffer_;            // 输出缓冲区
+  mutable zcoroutine::Spinlock output_buffer_lock_; // 输出缓冲区锁
 
   // 回调函数
   ConnectionCallback connection_callback_;

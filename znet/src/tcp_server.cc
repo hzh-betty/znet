@@ -30,6 +30,7 @@ bool TcpServer::bind(Address::ptr addr) {
 
 bool TcpServer::bind(const std::vector<Address::ptr> &addrs,
                      std::vector<Address::ptr> &fails) {
+  zcoroutine::RWMutex::WriteLock lock(socks_mutex_);
   for (auto &addr : addrs) {
     Socket::ptr sock = Socket::create_tcp(addr);
     if (!sock) {
@@ -69,7 +70,7 @@ bool TcpServer::bind(const std::vector<Address::ptr> &addrs,
 }
 
 void TcpServer::start_accept(Socket::ptr sock) {
-  while (!is_stop_) {
+  while (!is_stop_.load(std::memory_order_acquire)) {
     Socket::ptr client = sock->accept();
     if (client) {
       // 设置接收超时
@@ -109,10 +110,11 @@ void TcpServer::start_accept(Socket::ptr sock) {
 }
 
 bool TcpServer::start() {
-  if (!is_stop_) {
-    return true;
+  bool expected = true;
+  if (!is_stop_.compare_exchange_strong(expected, false,
+                                         std::memory_order_acq_rel)) {
+    return true;  // 已经启动
   }
-  is_stop_ = false;
 
   // 启动 io_worker_
   if (io_worker_) {
@@ -124,6 +126,7 @@ bool TcpServer::start() {
     accept_worker_->start();
   }
 
+  zcoroutine::RWMutex::ReadLock lock(socks_mutex_);
   for (auto &sock : socks_) {
     if (accept_worker_) {
       // 使用协程池创建协程用于接受连接
@@ -145,16 +148,33 @@ bool TcpServer::start() {
 }
 
 void TcpServer::stop() {
-  if (is_stop_) {
-    return; // 已经停止
+  bool expected = false;
+  if (!is_stop_.compare_exchange_strong(expected, true,
+                                         std::memory_order_acq_rel)) {
+    return;  // 已经停止
   }
-  is_stop_ = true;
 
-  // 关闭所有 socket
-  for (auto &sock : socks_) {
-    sock->close();
+  // 参考sylar: 将关闭操作调度到 accept_worker_ 执行，确保线程安全
+  auto self = shared_from_this();
+  if (accept_worker_) {
+    accept_worker_->schedule([this, self]() {
+      // 在 accept_worker 线程中执行关闭操作
+      {
+        zcoroutine::RWMutex::WriteLock lock(socks_mutex_);
+        for (auto &sock : socks_) {
+          sock->close();
+        }
+        socks_.clear();
+      }
+    });
+  } else {
+    // 没有 accept_worker，直接关闭
+    zcoroutine::RWMutex::WriteLock lock(socks_mutex_);
+    for (auto &sock : socks_) {
+      sock->close();
+    }
+    socks_.clear();
   }
-  socks_.clear();
 
   // 停止 accept_worker_（同步等待完成）
   if (accept_worker_) {
@@ -181,6 +201,8 @@ std::string TcpServer::to_string(const std::string &prefix) {
   ss << prefix << "[type=" << type_ << " name=" << name_
      << " recv_timeout=" << recv_timeout_ << "]" << std::endl;
   std::string pfx = prefix.empty() ? "    " : prefix;
+  
+  zcoroutine::RWMutex::ReadLock lock(socks_mutex_);
   for (auto &i : socks_) {
     ss << pfx << pfx << "fd=" << i->fd()
        << " local=" << i->get_local_address()->to_string() << std::endl;
