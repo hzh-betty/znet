@@ -73,8 +73,6 @@ protected:
         // 连接建立
       }
     });
-
-    conn->connect_established();
   }
 };
 

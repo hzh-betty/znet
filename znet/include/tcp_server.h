@@ -92,6 +92,7 @@ public:
 protected:
   /**
    * @brief 处理新连接的 TcpConnection
+   * @note connect_established() 已自动调用，子类无需手动调用
    */
   virtual void handle_client(TcpConnectionPtr conn);
 

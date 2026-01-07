@@ -89,10 +89,16 @@ void TcpServer::start_accept(Socket::ptr sock) {
       if (io_worker_) {
         auto self = shared_from_this();
         auto fiber = zcoroutine::FiberPool::get_instance().get_fiber(
-            [self, conn]() { self->handle_client(conn); });
+            [self, conn]() {
+              // 处理连接
+              self->handle_client(conn);
+              // 自动建立连接（注册IO事件）
+              conn->connect_established();
+            });
         io_worker_->schedule(std::move(fiber));
       } else {
         handle_client(conn);
+        conn->connect_established();
       }
     } else {
       if (errno != EAGAIN && errno != EWOULDBLOCK) {

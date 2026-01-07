@@ -150,8 +150,6 @@ protected:
     conn->set_close_callback([](const TcpConnectionPtr &conn) {
       // 连接关闭
     });
-
-    conn->connect_established();
   }
 };
 
