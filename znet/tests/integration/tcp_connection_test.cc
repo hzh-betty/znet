@@ -11,7 +11,9 @@
 #include <atomic>
 #include <chrono>
 #include <gtest/gtest.h>
+#include <sys/socket.h>
 #include <thread>
+#include <unistd.h>
 
 using namespace znet;
 using namespace zcoroutine;
@@ -55,7 +57,10 @@ TEST_F(TcpConnectionTest, ConnectionEstablished) {
   auto local_addr = std::make_shared<IPv4Address>("127.0.0.1", 9000);
   auto peer_addr = std::make_shared<IPv4Address>("127.0.0.1", 9001);
 
-  auto sock = Socket::create_tcp();
+  int sv[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+
+  auto sock = std::make_shared<Socket>(sv[0]);
   ASSERT_NE(sock, nullptr);
 
   auto conn = std::make_shared<TcpConnection>("test-conn", sock, local_addr,
@@ -71,6 +76,9 @@ TEST_F(TcpConnectionTest, ConnectionEstablished) {
 
   EXPECT_TRUE(callback_called);
   EXPECT_EQ(conn->state(), TcpConnection::State::Connected);
+
+  // 清理另一端的socket
+  ::close(sv[1]);
 }
 
 // 测试 Buffer 读写

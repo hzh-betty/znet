@@ -121,9 +121,9 @@ void StatusTable::del(const int fd) {
   }
 }
 
-StatusTable::ptr StatusTable::GetInstance() {
-  static ptr instance = std::make_shared<StatusTable>();
-  return instance;
+StatusTable* StatusTable::GetInstance() {
+  static StatusTable instance;
+  return &instance;
 }
 
 } // namespace zcoroutine

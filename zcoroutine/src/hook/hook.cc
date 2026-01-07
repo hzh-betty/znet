@@ -136,8 +136,7 @@ static ssize_t do_io_hook(int fd, OriginFun fun, const char *hook_fun_name,
   }
 
   // 获取文件描述符上下文
-  zcoroutine::StatusTable::ptr status_table =
-      zcoroutine::StatusTable::GetInstance();
+  auto* status_table = zcoroutine::StatusTable::GetInstance();
   zcoroutine::SocketStatus::ptr fd_ctx = status_table->get(fd);
   if (!fd_ctx) {
     return fun(fd, std::forward<Args>(args)...);
@@ -320,9 +319,7 @@ int socket(int domain, int type, int protocol) {
 
   // 获取 StatusTable 并注册该fd
   // 这一步很重要，因为我们需要追踪每个socket的状态（是否是非阻塞，超时设置等）
-  zcoroutine::StatusTable::ptr status_table =
-      zcoroutine::StatusTable::GetInstance();
-  status_table->get(fd, true); // auto_create = true
+  zcoroutine::StatusTable::GetInstance()->get(fd, true); // auto_create = true
 
   ZCOROUTINE_LOG_DEBUG("hook::socket fd={}", fd);
   return fd;
@@ -339,10 +336,8 @@ int socketpair(int domain, int type, int protocol, int sv[2]) {
   }
 
   // 获取 StatusTable 并注册两个fd
-  zcoroutine::StatusTable::ptr status_table =
-      zcoroutine::StatusTable::GetInstance();
-  status_table->get(sv[0], true); // auto_create = true
-  status_table->get(sv[1], true); // auto_create = true
+  zcoroutine::StatusTable::GetInstance()->get(sv[0], true); // auto_create = true
+  zcoroutine::StatusTable::GetInstance()->get(sv[1], true); // auto_create = true
 
   ZCOROUTINE_LOG_DEBUG("hook::socketpair sv[0]={}, sv[1]={}", sv[0], sv[1]);
   return ret;

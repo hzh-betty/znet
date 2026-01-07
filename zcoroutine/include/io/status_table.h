@@ -57,7 +57,6 @@ private:
  */
 class StatusTable : public NonCopyable {
 public:
-  using ptr = std::shared_ptr<StatusTable>;
 
   /**
    * @brief 获取文件描述符上下文
@@ -74,12 +73,12 @@ public:
   /**
    * @brief 获取单例
    */
-  static ptr GetInstance();
+  static StatusTable* GetInstance();
 
+private:
   StatusTable();
   ~StatusTable() = default;
 
-private:
   std::vector<SocketStatus::ptr> fd_datas_;
   RWMutex mutex_;
 };
