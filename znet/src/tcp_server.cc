@@ -92,7 +92,6 @@ void TcpServer::start_accept(Socket::ptr sock) {
             [self, conn]() {
               // 处理连接
               self->handle_client(conn);
-              // 自动建立连接（注册IO事件）
               conn->connect_established();
             });
         io_worker_->schedule(std::move(fiber));

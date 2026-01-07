@@ -37,9 +37,15 @@ void TcpConnection::connect_established() {
         std::bind(&TcpConnection::handle_read, shared_from_this()));
   }
 
-  // 触发连接建立回调（直接调用，不异步化）
+  // 触发连接建立回调（异步调度）
   if (connection_callback_) {
-    connection_callback_(shared_from_this());
+    std::weak_ptr<TcpConnection> weak_self = shared_from_this();
+    auto cb = connection_callback_;
+    io_scheduler_->schedule([weak_self, cb]() {
+      if (auto self = weak_self.lock()) {
+        cb(self);
+      }
+    });
   }
 
   ZNET_LOG_INFO("TcpConnection::connect_established [{}] fd={}", name_,
@@ -56,9 +62,15 @@ void TcpConnection::connect_destroyed() {
 
   set_state(State::Disconnected);
 
-  // 触发连接断开回调（直接调用，不异步化）
-  if (connection_callback_) {
-    connection_callback_(shared_from_this());
+  // 触发连接断开回调（异步调度）
+  if (connection_callback_ && io_scheduler_) {
+    std::weak_ptr<TcpConnection> weak_self = shared_from_this();
+    auto cb = connection_callback_;
+    io_scheduler_->schedule([weak_self, cb]() {
+      if (auto self = weak_self.lock()) {
+        cb(self);
+      }
+    });
   }
 
   socket_->close();
@@ -108,9 +120,19 @@ void TcpConnection::handle_read() {
   ssize_t n = input_buffer_.read_fd(socket_->fd(), &saved_errno);
 
   if (n > 0) {
-    // 数据到达，触发消息回调（直接调用，不异步化）
-    if (message_callback_) {
-      message_callback_(shared_from_this(), &input_buffer_);
+    // 数据到达，触发消息回调（异步调度）
+    if (message_callback_ && io_scheduler_) {
+      std::weak_ptr<TcpConnection> weak_self = shared_from_this();
+      auto cb = message_callback_;
+      // 将数据从 input_buffer_ 移动到临时 buffer，避免异步回调时 buffer 已变
+      auto buf = std::make_shared<Buffer>();
+      buf->append(input_buffer_.peek(), input_buffer_.readable_bytes());
+      input_buffer_.retrieve_all();
+      io_scheduler_->schedule([weak_self, cb, buf]() {
+        if (auto self = weak_self.lock()) {
+          cb(self, buf.get());
+        }
+      });
     }
   } else if (n == 0) {
     // 对端关闭连接
@@ -141,9 +163,15 @@ void TcpConnection::handle_write() {
         io_scheduler_->del_event(socket_->fd(), zcoroutine::FdContext::kWrite);
       }
 
-      // 触发写完成回调（直接调用，不异步化）
-      if (write_complete_callback_) {
-        write_complete_callback_(shared_from_this());
+      // 触发写完成回调（异步调度）
+      if (write_complete_callback_ && io_scheduler_) {
+        std::weak_ptr<TcpConnection> weak_self = shared_from_this();
+        auto cb = write_complete_callback_;
+        io_scheduler_->schedule([weak_self, cb]() {
+          if (auto self = weak_self.lock()) {
+            cb(self);
+          }
+        });
       }
 
       if (state_ == State::Disconnecting) {
@@ -170,9 +198,15 @@ void TcpConnection::handle_close() {
   // 关闭 socket
   socket_->close();
 
-  // 触发关闭回调（直接调用，不异步化）
-  if (close_callback_) {
-    close_callback_(shared_from_this());
+  // 触发关闭回调（异步调度）
+  if (close_callback_ && io_scheduler_) {
+    std::weak_ptr<TcpConnection> weak_self = shared_from_this();
+    auto cb = close_callback_;
+    io_scheduler_->schedule([weak_self, cb]() {
+      if (auto self = weak_self.lock()) {
+        cb(self);
+      }
+    });
   }
 }
 
@@ -194,9 +228,15 @@ void TcpConnection::send_in_loop(const void *data, size_t len) {
     n_wrote = socket_->send(data, len);
     if (n_wrote >= 0) {
       remaining = len - n_wrote;
-      if (remaining == 0 && write_complete_callback_) {
-        // 数据全部发送完成
-        write_complete_callback_(shared_from_this());
+      if (remaining == 0 && write_complete_callback_ && io_scheduler_) {
+        // 数据全部发送完成（异步调度）
+        std::weak_ptr<TcpConnection> weak_self = shared_from_this();
+        auto cb = write_complete_callback_;
+        io_scheduler_->schedule([weak_self, cb]() {
+          if (auto self = weak_self.lock()) {
+            cb(self);
+          }
+        });
       }
     } else {
       n_wrote = 0;
