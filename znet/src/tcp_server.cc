@@ -145,16 +145,6 @@ void TcpServer::stop() {
   }
   is_stop_ = true;
 
-  // 先取消所有 socket 上的事件，唤醒等待中的协程
-  // 注意：必须使用 accept_worker_ 来取消事件，因为 accept 协程在 accept_worker_ 中运行
-  if (accept_worker_) {
-    for (auto &sock : socks_) {
-      if (sock->is_valid()) {
-        accept_worker_->cancel_all(sock->fd());
-      }
-    }
-  }
-
   // 关闭所有 socket
   for (auto &sock : socks_) {
     sock->close();

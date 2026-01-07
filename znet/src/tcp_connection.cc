@@ -56,11 +56,6 @@ void TcpConnection::connect_destroyed() {
 
   set_state(State::Disconnected);
 
-  // 取消所有IO事件
-  if (io_scheduler_) {
-    io_scheduler_->cancel_all(socket_->fd());
-  }
-
   // 触发连接断开回调（直接调用，不异步化）
   if (connection_callback_) {
     connection_callback_(shared_from_this());
