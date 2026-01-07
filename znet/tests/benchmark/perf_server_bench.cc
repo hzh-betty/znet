@@ -6,7 +6,7 @@
 #include "tcp_server.h"
 #include "tcp_connection.h"
 #include "address.h"
-#include "buffer.h"
+#include "buff.h"
 #include "io/io_scheduler.h"
 #include "znet_logger.h"
 
@@ -86,7 +86,7 @@ int main(int argc, char *argv[]) {
   signal(SIGPIPE, SIG_IGN);
 
   // 初始化日志系统（同时初始化 znet 和 zcoroutine）
-  znet::init_logger(zlog::LogLevel::value::ERROR);
+  znet::init_logger(zlog::LogLevel::value::DEBUG);
 
   int port = 9000;
   int threads = 4;
@@ -117,11 +117,9 @@ int main(int argc, char *argv[]) {
   // 创建IO调度器
   auto io_worker =
       std::make_shared<IoScheduler>(threads, "PerfWorker", false);
-  io_worker->start();
 
   auto accept_worker =
       std::make_shared<IoScheduler>(1, "PerfAcceptor", false);
-  accept_worker->start();
 
   // 创建服务器
   g_server = std::make_shared<PerfHttpServer>(io_worker, accept_worker);

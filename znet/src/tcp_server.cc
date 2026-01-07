@@ -18,7 +18,6 @@ TcpServer::TcpServer(zcoroutine::IoScheduler::ptr io_worker,
       name_("znet/1.0.0"), type_("tcp"), is_stop_(true) {}
 
 TcpServer::~TcpServer() {
-  // 确保服务器已停止（stop() 会处理关闭和停止 accept_worker_）
   stop();
 }
 
@@ -78,13 +77,13 @@ void TcpServer::start_accept(Socket::ptr sock) {
         client->set_recv_timeout(recv_timeout_);
       }
 
-      // 创建TcpConnection
+      // 创建TcpConnection，转移 Socket 所有权
       auto local_addr = client->get_local_address();
       auto peer_addr = client->get_remote_address();
       std::string conn_name = name_ + "-" + peer_addr->to_string();
 
       TcpConnectionPtr conn = std::make_shared<TcpConnection>(
-          conn_name, client->fd(), local_addr, peer_addr, io_worker_.get());
+          conn_name, std::move(client), local_addr, peer_addr, io_worker_.get());
 
       // 处理连接 - 使用协程池创建协程
       if (io_worker_) {
@@ -165,6 +164,11 @@ void TcpServer::stop() {
   // 停止 accept_worker_（同步等待完成）
   if (accept_worker_) {
     accept_worker_->stop();
+  }
+
+  // 停止 io_worker_（同步等待完成）
+  if (io_worker_) {
+    io_worker_->stop();
   }
 }
 

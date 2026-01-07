@@ -48,12 +48,12 @@ public:
   /**
    * @brief 构造函数
    * @param name 连接名称
-   * @param sockfd socket 文件描述符
+   * @param socket Socket 对象（所有权转移）
    * @param local_addr 本地地址
    * @param peer_addr 对端地址
    * @param io_scheduler IO调度器
    */
-  TcpConnection(const std::string &name, int sockfd,
+  TcpConnection(const std::string &name, Socket::ptr socket,
                 const Address::ptr &local_addr, const Address::ptr &peer_addr,
                 zcoroutine::IoScheduler *io_scheduler = nullptr);
 

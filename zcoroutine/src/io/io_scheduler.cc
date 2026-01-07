@@ -237,6 +237,14 @@ int IoScheduler::cancel_all(int fd) {
     return 0;
   }
 
+  // 先检查是否有事件注册，避免重复删除 epoll 事件导致 ENOENT 错误
+  int old_events = fd_ctx->events();
+  if (old_events == FdContext::kNone) {
+    ZCOROUTINE_LOG_DEBUG(
+        "IoScheduler::cancel_all no events registered, fd={}", fd);
+    return 0;
+  }
+
   // 取消所有事件
   fd_ctx->cancel_all();
 

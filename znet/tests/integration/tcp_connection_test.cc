@@ -5,6 +5,7 @@
 
 #include "address.h"
 #include "io/io_scheduler.h"
+#include "socket.h"
 #include "tcp_connection.h"
 #include "znet_logger.h"
 #include <atomic>
@@ -37,10 +38,10 @@ TEST_F(TcpConnectionTest, CreateConnection) {
   auto local_addr = std::make_shared<IPv4Address>("127.0.0.1", 9000);
   auto peer_addr = std::make_shared<IPv4Address>("127.0.0.1", 9001);
 
-  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(sockfd, 0);
+  auto sock = Socket::create_tcp();
+  ASSERT_NE(sock, nullptr);
 
-  auto conn = std::make_shared<TcpConnection>("test-conn", sockfd, local_addr,
+  auto conn = std::make_shared<TcpConnection>("test-conn", sock, local_addr,
                                               peer_addr, scheduler_.get());
 
   EXPECT_EQ(conn->name(), "test-conn");
@@ -54,10 +55,10 @@ TEST_F(TcpConnectionTest, ConnectionEstablished) {
   auto local_addr = std::make_shared<IPv4Address>("127.0.0.1", 9000);
   auto peer_addr = std::make_shared<IPv4Address>("127.0.0.1", 9001);
 
-  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(sockfd, 0);
+  auto sock = Socket::create_tcp();
+  ASSERT_NE(sock, nullptr);
 
-  auto conn = std::make_shared<TcpConnection>("test-conn", sockfd, local_addr,
+  auto conn = std::make_shared<TcpConnection>("test-conn", sock, local_addr,
                                               peer_addr, scheduler_.get());
 
   std::atomic<bool> callback_called{false};
@@ -77,10 +78,10 @@ TEST_F(TcpConnectionTest, BufferReadWrite) {
   auto local_addr = std::make_shared<IPv4Address>("127.0.0.1", 9000);
   auto peer_addr = std::make_shared<IPv4Address>("127.0.0.1", 9001);
 
-  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(sockfd, 0);
+  auto sock = Socket::create_tcp();
+  ASSERT_NE(sock, nullptr);
 
-  auto conn = std::make_shared<TcpConnection>("test-conn", sockfd, local_addr,
+  auto conn = std::make_shared<TcpConnection>("test-conn", sock, local_addr,
                                               peer_addr, scheduler_.get());
 
   // 测试输入缓冲区
@@ -101,10 +102,10 @@ TEST_F(TcpConnectionTest, SetCallbacks) {
   auto local_addr = std::make_shared<IPv4Address>("127.0.0.1", 9000);
   auto peer_addr = std::make_shared<IPv4Address>("127.0.0.1", 9001);
 
-  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(sockfd, 0);
+  auto sock = Socket::create_tcp();
+  ASSERT_NE(sock, nullptr);
 
-  auto conn = std::make_shared<TcpConnection>("test-conn", sockfd, local_addr,
+  auto conn = std::make_shared<TcpConnection>("test-conn", sock, local_addr,
                                               peer_addr, scheduler_.get());
 
   std::atomic<int> callback_count{0};
@@ -130,10 +131,10 @@ TEST_F(TcpConnectionTest, SetTcpNoDelay) {
   auto local_addr = std::make_shared<IPv4Address>("127.0.0.1", 9000);
   auto peer_addr = std::make_shared<IPv4Address>("127.0.0.1", 9001);
 
-  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(sockfd, 0);
+  auto sock = Socket::create_tcp();
+  ASSERT_NE(sock, nullptr);
 
-  auto conn = std::make_shared<TcpConnection>("test-conn", sockfd, local_addr,
+  auto conn = std::make_shared<TcpConnection>("test-conn", sock, local_addr,
                                               peer_addr, scheduler_.get());
 
   // 不应该崩溃
@@ -146,10 +147,10 @@ TEST_F(TcpConnectionTest, SetKeepAlive) {
   auto local_addr = std::make_shared<IPv4Address>("127.0.0.1", 9000);
   auto peer_addr = std::make_shared<IPv4Address>("127.0.0.1", 9001);
 
-  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(sockfd, 0);
+  auto sock = Socket::create_tcp();
+  ASSERT_NE(sock, nullptr);
 
-  auto conn = std::make_shared<TcpConnection>("test-conn", sockfd, local_addr,
+  auto conn = std::make_shared<TcpConnection>("test-conn", sock, local_addr,
                                               peer_addr, scheduler_.get());
 
   // 不应该崩溃

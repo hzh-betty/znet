@@ -11,7 +11,7 @@
 #include "tcp_server.h"
 #include "tcp_connection.h"
 #include "address.h"
-#include "buffer.h"
+#include "buff.h"
 #include "io/io_scheduler.h"
 #include "znet_logger.h"
 
@@ -159,10 +159,7 @@ protected:
 
 void start_server(const BenchConfig &config) {
   auto io_worker = std::make_shared<IoScheduler>(config.thread_num, "HttpWorker", false);
-  io_worker->start();
-
   auto accept_worker = std::make_shared<IoScheduler>(1, "HttpAcceptor", false);
-  accept_worker->start();
 
   g_server = std::make_shared<HttpServer>(io_worker, accept_worker);
   g_server->set_name("HttpBenchServer");

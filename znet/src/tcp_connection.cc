@@ -6,16 +6,16 @@
 
 namespace znet {
 
-TcpConnection::TcpConnection(const std::string &name, int sockfd,
+TcpConnection::TcpConnection(const std::string &name, Socket::ptr socket,
                              const Address::ptr &local_addr,
                              const Address::ptr &peer_addr,
                              zcoroutine::IoScheduler *io_scheduler)
     : name_(name), state_(State::Connecting),
-      socket_(std::make_shared<Socket>(sockfd)), local_addr_(local_addr),
+      socket_(std::move(socket)), local_addr_(local_addr),
       peer_addr_(peer_addr), io_scheduler_(io_scheduler) {
 
   ZNET_LOG_INFO("TcpConnection::TcpConnection [{}] fd={} local={} peer={}",
-                name_, sockfd, local_addr_->to_string(),
+                name_, socket_->fd(), local_addr_->to_string(),
                 peer_addr_->to_string());
 }
 
@@ -37,7 +37,7 @@ void TcpConnection::connect_established() {
         std::bind(&TcpConnection::handle_read, shared_from_this()));
   }
 
-  // 触发连接建立回调
+  // 触发连接建立回调（直接调用，不异步化）
   if (connection_callback_) {
     connection_callback_(shared_from_this());
   }
@@ -47,18 +47,23 @@ void TcpConnection::connect_established() {
 }
 
 void TcpConnection::connect_destroyed() {
-  if (state_ == State::Connected) {
-    set_state(State::Disconnected);
+  // 避免重复清理
+  if (state_ == State::Disconnected) {
+    // 已经通过 handle_close 清理过了
+    ZNET_LOG_DEBUG("TcpConnection::connect_destroyed [{}] already disconnected", name_);
+    return;
+  }
 
-    // 取消所有IO事件
-    if (io_scheduler_) {
-      io_scheduler_->cancel_all(socket_->fd());
-    }
+  set_state(State::Disconnected);
 
-    // 触发连接断开回调
-    if (connection_callback_) {
-      connection_callback_(shared_from_this());
-    }
+  // 取消所有IO事件
+  if (io_scheduler_) {
+    io_scheduler_->cancel_all(socket_->fd());
+  }
+
+  // 触发连接断开回调（直接调用，不异步化）
+  if (connection_callback_) {
+    connection_callback_(shared_from_this());
   }
 
   socket_->close();
@@ -108,7 +113,7 @@ void TcpConnection::handle_read() {
   ssize_t n = input_buffer_.read_fd(socket_->fd(), &saved_errno);
 
   if (n > 0) {
-    // 数据到达，触发消息回调
+    // 数据到达，触发消息回调（直接调用，不异步化）
     if (message_callback_) {
       message_callback_(shared_from_this(), &input_buffer_);
     }
@@ -141,6 +146,7 @@ void TcpConnection::handle_write() {
         io_scheduler_->del_event(socket_->fd(), zcoroutine::FdContext::kWrite);
       }
 
+      // 触发写完成回调（直接调用，不异步化）
       if (write_complete_callback_) {
         write_complete_callback_(shared_from_this());
       }
@@ -156,12 +162,20 @@ void TcpConnection::handle_write() {
 }
 
 void TcpConnection::handle_close() {
+  // 避免重复关闭
+  if (state_ == State::Disconnected) {
+    return;
+  }
+
   ZNET_LOG_INFO("TcpConnection::handle_close [{}] state={}", name_,
                 static_cast<int>(state_));
 
   set_state(State::Disconnected);
 
-  // 触发关闭回调
+  // 关闭 socket
+  socket_->close();
+
+  // 触发关闭回调（直接调用，不异步化）
   if (close_callback_) {
     close_callback_(shared_from_this());
   }
@@ -171,6 +185,8 @@ void TcpConnection::handle_error() {
   int err = socket_->get_error();
   ZNET_LOG_ERROR("TcpConnection::handle_error [{}] SO_ERROR={} {}", name_, err,
                  strerror(err));
+  // 发生错误时关闭连接
+  handle_close();
 }
 
 void TcpConnection::send_in_loop(const void *data, size_t len) {
