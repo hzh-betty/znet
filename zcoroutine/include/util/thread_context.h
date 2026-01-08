@@ -38,7 +38,7 @@ struct SchedulerContext {
  */
 struct SharedStackContext {
   StackMode stack_mode; // 当前线程的栈模式
-  std::shared_ptr<SharedStack> shared_stack = nullptr; // 当前线程的共享栈
+  std::unique_ptr<SharedStack> shared_stack = nullptr; // 当前线程的共享栈
   std::unique_ptr<SwitchStack> switch_stack = nullptr; // 专用切换栈
   std::unique_ptr<Context> switch_context =
       nullptr; // 切换上下文（运行在 switch_stack_ 上）
@@ -138,7 +138,7 @@ public:
    * @brief 设置当前线程的共享栈
    * @param shared_stack 共享栈指针
    */
-  static void set_shared_stack(std::shared_ptr<SharedStack> shared_stack);
+  static void set_shared_stack(std::unique_ptr<SharedStack> shared_stack);
 
   /**
    * @brief 获取当前线程的共享栈

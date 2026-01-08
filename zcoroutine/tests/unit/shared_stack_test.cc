@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -28,9 +29,6 @@ protected:
   }
 };
 
-// ============================================================================
-// SharedStackBuffer 测试
-// ============================================================================
 
 // 测试1：SharedStackBuffer 创建
 TEST_F(SharedStackTest, SharedStackBufferCreation) {
@@ -60,10 +58,6 @@ TEST_F(SharedStackTest, SharedStackBufferOccupy) {
   buffer.set_occupy_fiber(nullptr);
   EXPECT_EQ(buffer.occupy_fiber(), nullptr);
 }
-
-// ============================================================================
-// SharedStack 测试
-// ============================================================================
 
 // 测试3：SharedStack 创建
 TEST_F(SharedStackTest, SharedStackCreation) {
@@ -101,9 +95,6 @@ TEST_F(SharedStackTest, SharedStackAllocateRoundRobin) {
   }
 }
 
-// ============================================================================
-// FiberStackConfig 测试
-// ============================================================================
 
 // 测试6：ThreadContext 默认模式
 TEST_F(SharedStackTest, ThreadContextDefault) {
@@ -130,12 +121,11 @@ TEST_F(SharedStackTest, ThreadContextAutoCreateSharedStack) {
 
 // 测试9：ThreadContext 自定义共享栈
 TEST_F(SharedStackTest, ThreadContextCustomSharedStack) {
-  auto custom_stack = std::make_shared<SharedStack>(8, 256 * 1024);
-  ThreadContext::set_shared_stack(custom_stack);
+  auto custom_stack = std::make_unique<SharedStack>(8, 256 * 1024);
+  ThreadContext::set_shared_stack(std::move(custom_stack));
   ThreadContext::set_stack_mode(StackMode::kShared);
 
   SharedStack *stack = ThreadContext::get_shared_stack();
-  EXPECT_EQ(stack, custom_stack.get());
   EXPECT_EQ(stack->count(), 8);
   EXPECT_EQ(stack->stack_size(), 256 * 1024);
 }
@@ -148,9 +138,6 @@ TEST_F(SharedStackTest, ThreadContextReset) {
   EXPECT_EQ(ThreadContext::get_stack_mode(), StackMode::kIndependent);
 }
 
-// ============================================================================
-// 共享栈协程基础功能测试
-// ============================================================================
 
 // 测试11：共享栈模式创建协程
 TEST_F(SharedStackTest, CreateFiberWithSharedStack) {
@@ -215,9 +202,6 @@ TEST_F(SharedStackTest, CreateFiberWithExplicitSharedStack) {
   EXPECT_EQ(fiber->state(), Fiber::State::kTerminated);
 }
 
-// ============================================================================
-// 共享栈协程 Yield 测试
-// ============================================================================
 
 // 测试15：共享栈协程单次yield
 TEST_F(SharedStackTest, SharedStackFiberYield) {
@@ -268,9 +252,6 @@ TEST_F(SharedStackTest, SharedStackFiberMultipleYields) {
   EXPECT_EQ(fiber->state(), Fiber::State::kTerminated);
 }
 
-// ============================================================================
-// 多协程共享栈切换测试
-// ============================================================================
 
 // 测试17：多协程共享同一栈缓冲区
 TEST_F(SharedStackTest, MultipleFibersShareSameBuffer) {
@@ -402,9 +383,6 @@ TEST_F(SharedStackTest, SharedStackFiberReset) {
   EXPECT_EQ(fiber->state(), Fiber::State::kTerminated);
 }
 
-// ============================================================================
-// 栈数据保存恢复测试
-// ============================================================================
 
 // 测试21：栈上复杂数据类型保存恢复
 TEST_F(SharedStackTest, SharedStackComplexDataPreservation) {
@@ -512,9 +490,6 @@ TEST_F(SharedStackTest, SharedStackRecursion) {
   EXPECT_EQ(result2, 21); // fib(8) = 21
 }
 
-// ============================================================================
-// 异常处理测试
-// ============================================================================
 
 // 测试23：共享栈协程内部异常捕获
 TEST_F(SharedStackTest, SharedStackExceptionCatch) {
@@ -564,9 +539,6 @@ TEST_F(SharedStackTest, SharedStackExceptionAfterYield) {
   EXPECT_EQ(fiber->state(), Fiber::State::kTerminated);
 }
 
-// ============================================================================
-// 混合模式测试
-// ============================================================================
 
 // 测试25：独立栈和共享栈协程混合执行
 TEST_F(SharedStackTest, MixedStackModes) {
@@ -617,9 +589,6 @@ TEST_F(SharedStackTest, MixedStackModes) {
   }
 }
 
-// ============================================================================
-// 边界条件测试
-// ============================================================================
 
 // 测试26：空函数共享栈协程
 TEST_F(SharedStackTest, SharedStackEmptyFunction) {
@@ -667,9 +636,6 @@ TEST_F(SharedStackTest, SharedStackManyYields) {
   EXPECT_EQ(fiber->state(), Fiber::State::kTerminated);
 }
 
-// ============================================================================
-// 线程安全测试
-// ============================================================================
 
 // 测试29：多线程独立的共享栈配置
 TEST_F(SharedStackTest, ThreadLocalStackConfig) {
@@ -811,17 +777,13 @@ TEST_F(SharedStackTest, SharedStackFrequentSwitch) {
   EXPECT_EQ(count2, 100);
 }
 
-// ============================================================================
-// Scheduler共享栈模式测试
-// ============================================================================
-
 // 测试33：Scheduler共享栈模式创建
 TEST_F(SharedStackTest, SchedulerSharedStackMode) {
   // 创建使用共享栈模式的调度器
   auto scheduler = std::make_shared<Scheduler>(1, "SharedStackScheduler", true);
 
   EXPECT_TRUE(scheduler->is_shared_stack());
-  EXPECT_NE(scheduler->get_shared_stack(), nullptr);
+  // SharedStack不再作为Scheduler成员，而是在worker线程中通过ThreadContext创建
 }
 
 // 测试34：Scheduler独立栈模式创建
@@ -831,7 +793,7 @@ TEST_F(SharedStackTest, SchedulerIndependentStackMode) {
       std::make_shared<Scheduler>(1, "IndependentStackScheduler", false);
 
   EXPECT_FALSE(scheduler->is_shared_stack());
-  EXPECT_EQ(scheduler->get_shared_stack(), nullptr);
+  // SharedStack不再作为Scheduler成员
 }
 
 // 测试35：Scheduler共享栈模式执行任务
@@ -902,14 +864,9 @@ TEST_F(SharedStackTest, SharedContextSaveRestoreEdgeCases) {
   for (int i = 0; i < 100; ++i)
     EXPECT_EQ(*(sp + i), (char)i);
 
-  // 6. restore_stack_buffer 非法 saved_stack_sp
-  // 场景：SharedContext 被错误地关联到了另一个 StackBuffer，导致 saved_stack_sp
-  // 不在范围内
   SharedStackBuffer buffer2(stack_size);
   ctx.init_shared(&buffer2); // 切换到 buffer2
 
-  // 此时 saved_stack_sp (指向 buffer1) 对于 buffer2 来说是越界的
-  // 应该触发 sp < stack_base || sp >= stack_top 检查
   ctx.restore_stack_buffer();
 }
 

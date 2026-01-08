@@ -77,7 +77,7 @@ StackMode ThreadContext::get_stack_mode() {
 }
 
 void ThreadContext::set_shared_stack(
-    std::shared_ptr<SharedStack> shared_stack) {
+    std::unique_ptr<SharedStack> shared_stack) {
   get_current()->shared_stack_ctx_.shared_stack = std::move(shared_stack);
 }
 
@@ -86,7 +86,7 @@ SharedStack *ThreadContext::get_shared_stack() {
   // 如果是共享栈模式但未设置共享栈，自动创建
   if (ctx->shared_stack_ctx_.stack_mode == StackMode::kShared &&
       !ctx->shared_stack_ctx_.shared_stack) {
-    ctx->shared_stack_ctx_.shared_stack = std::make_shared<SharedStack>();
+    ctx->shared_stack_ctx_.shared_stack = std::make_unique<SharedStack>();
   }
   return ctx->shared_stack_ctx_.shared_stack.get();
 }

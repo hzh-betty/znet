@@ -21,12 +21,7 @@ Scheduler::Scheduler(int thread_count, std::string name, bool use_shared_stack)
   ThreadContext::set_main_fiber(main_fiber);
   ThreadContext::set_current_fiber(main_fiber);
 
-  // 如果使用共享栈模式，创建共享栈
-  if (use_shared_stack_) {
-    shared_stack_ = std::make_shared<SharedStack>();
-    ZCOROUTINE_LOG_INFO("Scheduler[{}] using shared stack mode with {} buffers",
-                        name_, shared_stack_->count());
-  }
+  // 共享栈将在每个worker线程的run()中独立创建
 
   ZCOROUTINE_LOG_INFO(
       "Scheduler[{}] created with thread_count={}, shared_stack={}", name_,
@@ -148,11 +143,11 @@ void Scheduler::run() {
       [this]() { this->schedule_loop(); }, StackAllocator::kDefaultStackSize,
       "scheduler", false);
 
-  // 如果使用共享栈模式，设置线程本地的栈模式和共享栈
-  // 必须在创建 scheduler_fiber 之后设置，避免 scheduler_fiber 使用共享栈
-  if (use_shared_stack_ && shared_stack_) {
+  // 如果使用共享栈模式，为当前线程创建独立的共享栈
+  // 每个线程都有自己独立的SharedStack，避免多线程竞争
+  if (use_shared_stack_) {
     ThreadContext::set_stack_mode(StackMode::kShared);
-    ThreadContext::set_shared_stack(shared_stack_);
+    ThreadContext::get_shared_stack();
   }
   ThreadContext::set_scheduler_fiber(scheduler_fiber);
 

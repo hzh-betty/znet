@@ -11,6 +11,7 @@
 
 #include "runtime/fiber.h"
 #include "scheduling/task_queue.h"
+#include "util/thread_context.h"
 #include "util/zcoroutine_logger.h"
 
 namespace zcoroutine {
@@ -110,12 +111,11 @@ public:
    */
   bool is_shared_stack() const { return use_shared_stack_; }
 
-  /**
+   /**
    * @brief 获取共享栈指针（仅当共享栈模式时有效）
    * @return 共享栈指针
    */
-  SharedStack::ptr get_shared_stack() const { return shared_stack_; }
-
+  SharedStack* get_shared_stack() const { return ThreadContext::get_shared_stack(); }
 protected:
   /**
    * @brief 工作线程主循环
@@ -139,8 +139,7 @@ protected:
   std::atomic<int> idle_thread_count_;   // 空闲线程数
 
   // 共享栈相关
-  bool use_shared_stack_ = false;           // 是否使用共享栈模式
-  SharedStack::ptr shared_stack_ = nullptr; // 共享栈
+  bool use_shared_stack_ = false; // 是否使用共享栈模式
 };
 
 } // namespace zcoroutine

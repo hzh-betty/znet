@@ -71,10 +71,9 @@ SharedStackBuffer *SharedStack::allocate() {
     return nullptr;
   }
 
-  // 轮询分配
-  unsigned int idx =
-      alloc_idx_.fetch_add(1, std::memory_order_relaxed) % count_;
-
+  ++index_;
+  size_t idx = index_ % count_;
+  
   ZCOROUTINE_LOG_DEBUG("SharedStack::allocate: idx={}", idx);
 
   return stack_array_[idx].get();
@@ -138,10 +137,8 @@ void SwitchStack::switch_func() {
           // 获取当前占用此共享栈的协程
           Fiber *occupy_fiber = buffer->occupy_fiber();
 
-          // 设置目标协程占用此共享栈
-          buffer->set_occupy_fiber(target);
-
           // 如果有其他协程占用且不是目标协程且不是当前协程，保存其栈内容
+          // 注意：必须先保存其他协程的栈，再设置occupy_fiber，避免竞态条件
           if (occupy_fiber && occupy_fiber != target && occupy_fiber != curr) {
             SharedContext *occupy_stack_ctx =
                 occupy_fiber->get_shared_context();
@@ -150,6 +147,9 @@ void SwitchStack::switch_func() {
               occupy_stack_ctx->save_stack_buffer(occupy_rsp);
             }
           }
+
+          // 在保存完其他协程的栈之后，再设置目标协程占用此共享栈
+          buffer->set_occupy_fiber(target);
 
           // 恢复目标协程的栈内容
           if (target_stack_ctx->save_buffer() &&

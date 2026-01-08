@@ -314,9 +314,10 @@ void Fiber::reset(std::function<void()> func) {
   state_ = State::kReady;
   exception_ = nullptr;
 
-  // 共享栈模式：清理保存的栈内容
+  // 共享栈模式：清理保存的栈内容和占用标记
   if (shared_ctx_->is_shared_stack()) {
     shared_ctx_->reset();
+    shared_ctx_->clear_occupy(this);
   }
 
   // 重新创建上下文
