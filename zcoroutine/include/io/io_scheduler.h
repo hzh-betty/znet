@@ -51,7 +51,7 @@ public:
    * @return 成功返回0，失败返回-1
    */
   int add_event(int fd, FdContext::Event event,
-                const std::function<void()> &callback = nullptr);
+                std::function<void()> callback = nullptr);
 
   /**
    * @brief 删除IO事件

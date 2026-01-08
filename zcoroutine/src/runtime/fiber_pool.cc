@@ -4,6 +4,7 @@
 #include <mutex>
 
 #include "util/zcoroutine_logger.h"
+#include "util/thread_context.h"
 
 namespace zcoroutine {
 
@@ -24,6 +25,14 @@ FiberPool &FiberPool::get_instance() {
 Fiber::ptr FiberPool::get_fiber(std::function<void()> func, size_t stack_size,
                                 const std::string &name,
                                 bool use_shared_stack) {
+
+  //shared stack 是线程局部的，全局池会导致跨线程复用协程，
+  if (use_shared_stack || ThreadContext::get_stack_mode() == StackMode::kShared) {
+    auto fiber = std::make_shared<Fiber>(func, stack_size, name, use_shared_stack);
+    total_created_.fetch_add(1, std::memory_order_relaxed);
+    return fiber;
+  }
+
   Fiber::ptr fiber = nullptr;
 
   // 尝试从池中获取可复用的协程
@@ -72,6 +81,12 @@ Fiber::ptr FiberPool::get_fiber(std::function<void()> func, size_t stack_size,
 bool FiberPool::return_fiber(const Fiber::ptr &fiber) {
   if (!fiber) {
     ZCOROUTINE_LOG_WARN("FiberPool::return_fiber: null fiber");
+    return false;
+  }
+
+  // Shared stack 模式下不归还协程到池中
+  // shared stack 是线程局部的，全局池会导致跨线程复用协程，
+  if (fiber->is_shared_stack() || ThreadContext::get_stack_mode() == StackMode::kShared) {
     return false;
   }
 

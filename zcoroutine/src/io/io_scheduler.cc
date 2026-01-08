@@ -105,7 +105,7 @@ void IoScheduler::stop() {
 }
 
 int IoScheduler::add_event(int fd, FdContext::Event event,
-                           const std::function<void()> &callback) {
+                           std::function<void()> callback) {
   ZCOROUTINE_LOG_DEBUG(
       "IoScheduler::add_event fd={}, event={}, has_callback={}", fd,
       FdContext::event_to_string(event), callback != nullptr);
