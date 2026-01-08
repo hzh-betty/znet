@@ -82,11 +82,12 @@ int main(int argc, char *argv[]) {
   signal(SIGPIPE, SIG_IGN);
 
   // 初始化日志系统（同时初始化 znet 和 zcoroutine）
-  znet::init_logger(zlog::LogLevel::value::DEBUG);
+  znet::init_logger(zlog::LogLevel::value::WARNING);
 
   int port = 9000;
   int threads = 4;
   int duration = 30;
+  bool use_shared_stack = false;
 
   // 解析命令行参数
   for (int i = 1; i < argc; i++) {
@@ -96,26 +97,30 @@ int main(int argc, char *argv[]) {
       threads = atoi(argv[++i]);
     } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
       duration = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "-s") == 0) {
+      use_shared_stack = true;
     } else if (strcmp(argv[i], "-h") == 0) {
       std::cout << "Usage: " << argv[0] << " [options]\n"
                 << "Options:\n"
                 << "  -p <port>      端口 (default: 9000)\n"
                 << "  -t <threads>   线程数 (default: 4)\n"
                 << "  -d <duration>  运行时长(秒) (default: 30)\n"
+                << "  -s             使用共享栈模式 (default: 独立栈)\n"
                 << "  -h             显示帮助\n";
       return 0;
     }
   }
 
   std::cout << "Starting server: port=" << port << ", threads=" << threads
+            << ", shared_stack=" << (use_shared_stack ? "true" : "false")
             << ", duration=" << duration << "s" << std::endl;
 
   // 创建IO调度器
   auto io_worker =
-      std::make_shared<IoScheduler>(threads, "PerfWorker", false);
+      std::make_shared<IoScheduler>(threads, "PerfWorker", use_shared_stack);
 
   auto accept_worker =
-      std::make_shared<IoScheduler>(1, "PerfAcceptor", false);
+      std::make_shared<IoScheduler>(1, "PerfAcceptor", use_shared_stack);
 
   // 创建服务器
   g_server = std::make_shared<PerfHttpServer>(io_worker, accept_worker);

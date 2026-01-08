@@ -1,5 +1,5 @@
 #!/bin/bash
-# znet 性能分析脚本
+# znet 性能分析脚本 - 支持独立栈和共享栈模式对比测试
 
 set -e
 
@@ -7,25 +7,34 @@ PORT=9000
 THREADS=4
 DURATION=30
 BUILD_DIR=${BUILD_DIR:-build}
+MODE=${MODE:-"normal"}  # normal/shared/both
 
 run_perf_test() {
-    local prefix=$1
-    
+    local use_shared=$1
+    local prefix=$2
+
     # 创建输出目录
     local output_dir="perf_results/${prefix}_$(date +%Y%m%d_%H%M%S)"
     mkdir -p "$output_dir"
     echo "输出目录: $output_dir"
-    
+
     echo ""
     echo "=========================================="
-    echo "性能分析: ${prefix}"
+    if [ "$use_shared" = "true" ]; then
+        echo "性能分析: 共享栈模式"
+    else
+        echo "性能分析: 独立栈模式"
+    fi
     echo "=========================================="
-    
+
     # 构建启动命令
     local cmd="${BUILD_DIR}/bin/znet_perf_server_bench -p $PORT -t $THREADS -d $DURATION"
-    
+    if [ "$use_shared" = "true" ]; then
+        cmd="$cmd -s"
+    fi
+
     # 启动服务器
-    echo "[1] 启动服务器: port=$PORT, threads=$THREADS, duration=$DURATION"
+    echo "[1] 启动服务器: port=$PORT, threads=$THREADS, duration=$DURATION, shared_stack=$use_shared"
     $cmd > ${output_dir}/server.log 2>&1 &
     SERVER_PID=$!
     echo "服务器PID: $SERVER_PID"
@@ -129,21 +138,31 @@ print_usage() {
     echo "用法: $0 [选项]"
     echo ""
     echo "选项:"
+    echo "  -m <mode>      测试模式: normal/shared/both (default: normal)"
     echo "  -p <port>      服务器端口 (default: 9000)"
     echo "  -t <threads>   工作线程数 (default: 4)"
     echo "  -d <duration>  运行时长(秒) (default: 30)"
     echo "  -b <dir>       构建目录 (default: build)"
     echo "  -h             显示帮助"
     echo ""
+    echo "测试模式说明:"
+    echo "  normal  - 仅测试独立栈模式"
+    echo "  shared  - 仅测试共享栈模式"
+    echo "  both    - 对比测试两种模式"
+    echo ""
     echo "示例:"
-    echo "  $0                          # 使用默认参数"
-    echo "  $0 -p 8080 -t 8 -d 60       # 自定义参数"
+    echo "  $0                          # 使用默认参数测试独立栈"
+    echo "  $0 -m both                  # 对比测试独立栈和共享栈"
+    echo "  $0 -m shared -p 8080 -t 8   # 测试共享栈模式，自定义参数"
     echo "  $0 -b build_release         # 指定构建目录"
 }
 
 # 解析命令行参数
-while getopts "p:t:d:b:h" opt; do
+while getopts "m:p:t:d:b:h" opt; do
     case $opt in
+        m)
+            MODE=$OPTARG
+            ;;
         p)
             PORT=$OPTARG
             ;;
@@ -172,6 +191,7 @@ echo "=========================================="
 echo "znet 性能分析工具"
 echo "=========================================="
 echo "配置:"
+echo "  测试模式: $MODE"
 echo "  端口: $PORT"
 echo "  线程数: $THREADS"
 echo "  运行时长: $DURATION 秒"
@@ -181,7 +201,39 @@ echo ""
 
 check_dependencies
 
-run_perf_test "znet"
+# 主流程
+case $MODE in
+    "normal")
+        run_perf_test "false" "normal"
+        ;;
+    "shared")
+        run_perf_test "true" "shared"
+        ;;
+    "both")
+        run_perf_test "false" "normal"
+        sleep 3
+        run_perf_test "true" "shared"
+
+        echo ""
+        echo "=========================================="
+        echo "性能对比总结"
+        echo "=========================================="
+        echo ""
+        echo "--- 独立栈模式 ---"
+        find perf_results -name "normal_*" -type d | sort | tail -1 | xargs -I {} sh -c 'grep -E "Requests/sec|Transfer/sec" {}/wrk_result.txt || true'
+        find perf_results -name "normal_*" -type d | sort | tail -1 | xargs -I {} sh -c 'grep -E "cache-misses|L1-dcache-load-misses" {}/perf_stat.txt | head -2 || true'
+        echo ""
+        echo "--- 共享栈模式 ---"
+        find perf_results -name "shared_*" -type d | sort | tail -1 | xargs -I {} sh -c 'grep -E "Requests/sec|Transfer/sec" {}/wrk_result.txt || true'
+        find perf_results -name "shared_*" -type d | sort | tail -1 | xargs -I {} sh -c 'grep -E "cache-misses|L1-dcache-load-misses" {}/perf_stat.txt | head -2 || true'
+        ;;
+    *)
+        echo "错误: 无效的测试模式 '$MODE'"
+        echo ""
+        print_usage
+        exit 1
+        ;;
+esac
 
 echo ""
 echo "=========================================="
