@@ -79,8 +79,6 @@ protected:
 void signal_handler(int) { g_running.store(false); }
 
 int main(int argc, char *argv[]) {
-  signal(SIGINT, signal_handler);
-  signal(SIGTERM, signal_handler);
   signal(SIGPIPE, SIG_IGN);
 
   // 初始化日志系统（同时初始化 znet 和 zcoroutine）

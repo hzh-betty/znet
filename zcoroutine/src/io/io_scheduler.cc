@@ -305,6 +305,13 @@ void IoScheduler::trigger_event(int fd, FdContext::Event event) {
 
   del_event(fd_ctx->fd(), event);
 
+  // 停止过程中不再调度新任务，避免退出阶段被事件/回调持续延长
+  if (stopping_.load(std::memory_order_relaxed)) {
+    ZCOROUTINE_LOG_DEBUG(
+        "IoScheduler::trigger_event scheduler stopping, skip scheduling");
+    return;
+  }
+  
   // 最后触发回调或调度协程（epoll已更新，回调中可以安全地重新注册）
   if (callback) {
     ZCOROUTINE_LOG_DEBUG(

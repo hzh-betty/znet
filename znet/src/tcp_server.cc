@@ -156,7 +156,7 @@ void TcpServer::stop() {
     return; // 已经停止
   }
 
-  // 参考sylar: 将关闭操作调度到 accept_worker_ 执行，确保线程安全
+  //将关闭操作调度到 accept_worker_ 执行，确保线程安全
   auto self = shared_from_this();
   if (accept_worker_) {
     accept_worker_->schedule([this, self]() {

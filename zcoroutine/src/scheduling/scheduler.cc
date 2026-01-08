@@ -69,20 +69,13 @@ void Scheduler::stop() {
     return; // 已经在停止中
   }
 
-  ZCOROUTINE_LOG_INFO("Scheduler[{}] stopping, waiting for {} pending tasks...",
-                      name_, task_queue_->size());
+  ZCOROUTINE_LOG_INFO("Scheduler[{}] stopping with {} pending tasks...", name_,
+                      task_queue_->size());
 
-  // 等待所有任务处理完成
-  while (!task_queue_->empty()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-
-  ZCOROUTINE_LOG_INFO("Scheduler[{}] all tasks completed, stopping task queue",
-                      name_);
-
+  // 先设置停止标志，避免 stop 期间被持续调度新任务导致无法退出
   stopping_ = true;
 
-  // 停止任务队列，唤醒所有等待的线程
+  // 停止任务队列，唤醒所有等待的线程（worker 将继续把队列中已有任务尽量处理完）
   task_queue_->stop();
 
   // 等待所有线程结束
