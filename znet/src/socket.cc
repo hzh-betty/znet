@@ -175,12 +175,24 @@ bool Socket::close() {
 
 bool Socket::shutdown_write() {
   if (!is_valid()) {
-    return false;
+    // 与 close() 的语义保持一致：重复调用视为成功
+    return true;
   }
 
   if (::shutdown(sockfd_, SHUT_WR) != 0) {
+    const int err = errno;
+    // 共享栈/并发关闭场景下，shutdown 可能返回“未连接/已关闭/无效参数”，
+    // 这些在关闭流程中属于可预期状态，不应打 ERROR。
+    if (err == ENOTCONN || err == EINVAL || err == EBADF) {
+      ZNET_LOG_DEBUG(
+          "Socket::shutdown_write ignored: fd={}, errno={}, error={}", sockfd_,
+          err, strerror(err));
+      is_connected_ = false;
+      return true;
+    }
+
     ZNET_LOG_ERROR("Socket::shutdown_write failed: fd={}, errno={}, error={}",
-                   sockfd_, errno, strerror(errno));
+                   sockfd_, err, strerror(err));
     return false;
   }
 
