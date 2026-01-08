@@ -97,12 +97,17 @@ Socket::ptr Socket::accept() {
 
   sockaddr_storage addr;
   socklen_t len = sizeof(addr);
-  int clientfd = ::accept(sockfd_, reinterpret_cast<sockaddr *>(&addr), &len);
+  const int fd = sockfd_;
+  int clientfd = ::accept(fd, reinterpret_cast<sockaddr *>(&addr), &len);
 
   if (clientfd == -1) {
-    if (errno != EAGAIN && errno != EWOULDBLOCK) {
-      ZNET_LOG_ERROR("Socket::accept failed: fd={}, errno={}, error={}",
-                     sockfd_, errno, strerror(errno));
+    // EAGAIN/EWOULDBLOCK: 非阻塞或 hook 场景下正常重试
+    // EINTR: 被信号中断，正常重试
+    // EBADF: socket 被关闭（常见于 stop/shutdown 过程），无需报错
+    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR &&
+        errno != EBADF) {
+      ZNET_LOG_ERROR("Socket::accept failed: fd={}, errno={}, error={}", fd,
+                     errno, strerror(errno));
     }
     return nullptr;
   }

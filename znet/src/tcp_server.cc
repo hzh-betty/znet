@@ -1,5 +1,6 @@
 #include "tcp_server.h"
 #include "io/io_scheduler.h"
+#include "io/status_table.h"
 #include "runtime/fiber_pool.h"
 #include "znet_logger.h"
 #include <errno.h>
@@ -52,6 +53,11 @@ bool TcpServer::bind(const std::vector<Address::ptr> &addrs,
       continue;
     }
 
+    // 关键：将监听 fd 注册到 zcoroutine 的 StatusTable。
+    // 否则如果 socket 在 hook 未开启的线程里创建，accept hook 将拿不到上下文，
+    // 进而退化为阻塞 accept，导致 stop() 时 join 卡死。
+    zcoroutine::StatusTable::GetInstance()->get(sock->fd(), true);
+
     socks_.push_back(sock);
   }
 
@@ -103,10 +109,20 @@ void TcpServer::start_accept(Socket::ptr sock) {
         conn->connect_established();
       }
     } else {
-      if (errno != EAGAIN && errno != EWOULDBLOCK) {
-        ZNET_LOG_ERROR("TcpServer::start_accept accept errno={} errstr={}",
-                       errno, strerror(errno));
+      if (is_stop_.load(std::memory_order_acquire)) {
+        break;
       }
+
+      const int err = errno;
+      if (err == EAGAIN || err == EWOULDBLOCK) {
+        continue;
+      }
+      if (err == EINTR || err == EBADF) {
+        // EINTR: 被信号中断；EBADF: 监听 socket 已关闭
+        break;
+      }
+      ZNET_LOG_ERROR("TcpServer::start_accept accept errno={} errstr={}", err,
+                     strerror(err));
     }
   }
 }
