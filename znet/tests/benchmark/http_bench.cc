@@ -156,8 +156,9 @@ protected:
 // ========================= 服务器管理 =========================
 
 void start_server(const BenchConfig &config) {
-  auto io_worker = std::make_shared<IoScheduler>(config.thread_num, "HttpWorker", false);
-  auto accept_worker = std::make_shared<IoScheduler>(1, "HttpAcceptor", false);
+
+  auto io_worker = std::make_shared<IoScheduler>(config.thread_num, "HttpWorker", true);
+  auto accept_worker = std::make_shared<IoScheduler>(1, "HttpAcceptor", true);
 
   g_server = std::make_shared<HttpServer>(io_worker, accept_worker);
   g_server->set_name("HttpBenchServer");

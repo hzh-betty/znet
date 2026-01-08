@@ -94,19 +94,19 @@ public:
 
   // ========== 回调设置 ==========
 
-  void set_connection_callback(const ConnectionCallback &cb) {
-    connection_callback_ = cb;
+  void set_connection_callback(ConnectionCallback cb) {
+    connection_callback_ = std::move(cb);
   }
 
-  void set_message_callback(const MessageCallback &cb) {
-    message_callback_ = cb;
+  void set_message_callback(MessageCallback cb) {
+    message_callback_ = std::move(cb);
   }
 
-  void set_write_complete_callback(const WriteCompleteCallback &cb) {
-    write_complete_callback_ = cb;
+  void set_write_complete_callback(WriteCompleteCallback cb) {
+    write_complete_callback_ = std::move(cb);
   }
 
-  void set_close_callback(const CloseCallback &cb) { close_callback_ = cb; }
+  void set_close_callback(CloseCallback cb) { close_callback_ = std::move(cb); }
 
   // ========== 连接管理 ==========
 

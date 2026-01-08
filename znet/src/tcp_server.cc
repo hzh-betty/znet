@@ -17,9 +17,7 @@ TcpServer::TcpServer(zcoroutine::IoScheduler::ptr io_worker,
       recv_timeout_(60 * 1000 * 2), // 默认 2 分钟
       name_("znet/1.0.0"), type_("tcp"), is_stop_(true) {}
 
-TcpServer::~TcpServer() {
-  stop();
-}
+TcpServer::~TcpServer() { stop(); }
 
 bool TcpServer::bind(Address::ptr addr) {
   std::vector<Address::ptr> addrs;
@@ -84,18 +82,22 @@ void TcpServer::start_accept(Socket::ptr sock) {
       std::string conn_name = name_ + "-" + peer_addr->to_string();
 
       TcpConnectionPtr conn = std::make_shared<TcpConnection>(
-          conn_name, std::move(client), local_addr, peer_addr, io_worker_.get());
+          conn_name, std::move(client), local_addr, peer_addr,
+          io_worker_.get());
 
-      // 处理连接 - 使用协程池创建协程
+      // 这样可以确保协程使用正确的线程本地 SharedStack，避免跨线程共享栈问题
       if (io_worker_) {
         auto self = shared_from_this();
-        auto fiber = zcoroutine::FiberPool::get_instance().get_fiber(
-            [self, conn]() {
-              // 处理连接
-              self->handle_client(conn);
-              conn->connect_established();
-            });
-        io_worker_->schedule(std::move(fiber));
+        io_worker_->schedule([self, conn]() {
+          // 在 worker 线程中创建协程，使用 worker 线程的 SharedStack
+          auto fiber =
+              zcoroutine::FiberPool::get_instance().get_fiber([self, conn]() {
+                // 处理连接
+                self->handle_client(conn);
+                conn->connect_established();
+              });
+          fiber->resume();
+        });
       } else {
         handle_client(conn);
         conn->connect_established();
@@ -112,8 +114,8 @@ void TcpServer::start_accept(Socket::ptr sock) {
 bool TcpServer::start() {
   bool expected = true;
   if (!is_stop_.compare_exchange_strong(expected, false,
-                                         std::memory_order_acq_rel)) {
-    return true;  // 已经启动
+                                        std::memory_order_acq_rel)) {
+    return true; // 已经启动
   }
 
   // 启动 io_worker_
@@ -150,8 +152,8 @@ bool TcpServer::start() {
 void TcpServer::stop() {
   bool expected = false;
   if (!is_stop_.compare_exchange_strong(expected, true,
-                                         std::memory_order_acq_rel)) {
-    return;  // 已经停止
+                                        std::memory_order_acq_rel)) {
+    return; // 已经停止
   }
 
   // 参考sylar: 将关闭操作调度到 accept_worker_ 执行，确保线程安全
@@ -201,7 +203,7 @@ std::string TcpServer::to_string(const std::string &prefix) {
   ss << prefix << "[type=" << type_ << " name=" << name_
      << " recv_timeout=" << recv_timeout_ << "]" << std::endl;
   std::string pfx = prefix.empty() ? "    " : prefix;
-  
+
   zcoroutine::RWMutex::ReadLock lock(socks_mutex_);
   for (auto &i : socks_) {
     ss << pfx << pfx << "fd=" << i->fd()
