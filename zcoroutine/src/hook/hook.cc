@@ -44,6 +44,7 @@ void hook_init() {
   XX(socketpair)
   XX(connect)
   XX(accept)
+  XX(accept4)
   XX(read)
   XX(readv)
   XX(recv)
@@ -79,6 +80,7 @@ socket_func socket_f = nullptr;
 socketpair_func socketpair_f = nullptr;
 connect_func connect_f = nullptr;
 accept_func accept_f = nullptr;
+accept4_func accept4_f = nullptr;
 read_func read_f = nullptr;
 readv_func readv_f = nullptr;
 recv_func recv_f = nullptr;
@@ -460,6 +462,27 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
                                        SO_RCVTIMEO, addr, addrlen));
   if (fd >= 0) {
     // 注册新连接的fd
+    zcoroutine::StatusTable::GetInstance()->get(fd, true);
+  }
+  return fd;
+}
+
+int accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
+  // 如果 accept4 符号不可用，则退化为 accept（flags 语义由上层负责兜底）
+  if (!accept4_f) {
+    int fd = static_cast<int>(do_io_hook(sockfd, accept_f, "accept4->accept",
+                                         zcoroutine::FdContext::kRead,
+                                         SO_RCVTIMEO, addr, addrlen));
+    if (fd >= 0) {
+      zcoroutine::StatusTable::GetInstance()->get(fd, true);
+    }
+    return fd;
+  }
+
+  int fd = static_cast<int>(do_io_hook(sockfd, accept4_f, "accept4",
+                                       zcoroutine::FdContext::kRead,
+                                       SO_RCVTIMEO, addr, addrlen, flags));
+  if (fd >= 0) {
     zcoroutine::StatusTable::GetInstance()->get(fd, true);
   }
   return fd;

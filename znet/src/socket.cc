@@ -98,7 +98,19 @@ Socket::ptr Socket::accept() {
   sockaddr_storage addr;
   socklen_t len = sizeof(addr);
   const int fd = sockfd_;
-  int clientfd = ::accept(fd, reinterpret_cast<sockaddr *>(&addr), &len);
+
+  // 优先使用 accept4：一次 syscall 同时设置 NONBLOCK/CLOEXEC，减少用户态/内核态切换。
+  int clientfd = -1;
+#if defined(SOCK_NONBLOCK) && defined(SOCK_CLOEXEC)
+  clientfd = ::accept4(fd, reinterpret_cast<sockaddr *>(&addr), &len,
+                       SOCK_NONBLOCK | SOCK_CLOEXEC);
+  if (clientfd == -1 && errno == ENOSYS) {
+    // 内核不支持 accept4，退化为 accept
+    clientfd = ::accept(fd, reinterpret_cast<sockaddr *>(&addr), &len);
+  }
+#else
+  clientfd = ::accept(fd, reinterpret_cast<sockaddr *>(&addr), &len);
+#endif
 
   if (clientfd == -1) {
     // EAGAIN/EWOULDBLOCK: 非阻塞或 hook 场景下正常重试

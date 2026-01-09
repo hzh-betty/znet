@@ -3,21 +3,9 @@
 #include "znet_logger.h"
 #include <errno.h>
 #include <string.h>
+#include <mutex>
 
 namespace znet {
-
-/**
- * @brief RAII锁守护，用于Spinlock
- */
-class SpinlockGuard {
-public:
-  explicit SpinlockGuard(zcoroutine::Spinlock &lock) : lock_(lock) {
-    lock_.lock();
-  }
-  ~SpinlockGuard() { lock_.unlock(); }
-private:
-  zcoroutine::Spinlock &lock_;
-};
 
 const char* TcpConnection::state_to_string(State s) {
   switch (s) {
@@ -205,7 +193,7 @@ void TcpConnection::handle_write() {
     ssize_t n = 0;
     size_t remaining = 0;
     {
-      SpinlockGuard lock(output_buffer_lock_);
+      std::lock_guard<zcoroutine::Spinlock> lock(output_buffer_lock_);
       if (output_buffer_.readable_bytes() == 0) {
         remaining = 0;
       } else {
@@ -305,7 +293,7 @@ void TcpConnection::send_in_loop(const void *data, size_t len) {
   size_t remaining = len;
   bool fault_error = false;
 
-  SpinlockGuard lock(output_buffer_lock_);
+  std::lock_guard<zcoroutine::Spinlock> lock(output_buffer_lock_);
   
   // 如果输出缓冲区没有数据，尝试直接发送
   if (output_buffer_.readable_bytes() == 0) {
@@ -352,7 +340,7 @@ void TcpConnection::send_in_loop(const void *data, size_t len) {
 }
 
 void TcpConnection::shutdown_in_loop() {
-  SpinlockGuard lock(output_buffer_lock_);
+  std::lock_guard<zcoroutine::Spinlock> lock(output_buffer_lock_);
   if (output_buffer_.readable_bytes() == 0) {
     // 输出缓冲区为空，可以关闭写端
     socket_->shutdown_write();
