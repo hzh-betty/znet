@@ -126,10 +126,48 @@ void TcpConnection::set_tcp_no_delay(bool on) { socket_->set_tcp_nodelay(on); }
 void TcpConnection::set_keep_alive(bool on) { socket_->set_keep_alive(on); }
 
 void TcpConnection::handle_read() {
-  int saved_errno = 0;
-  ssize_t n = input_buffer_.read_fd(socket_->fd(), &saved_errno);
+  if (!connected()) {
+    return;
+  }
 
-  if (n > 0) {
+  // IoScheduler 的 trigger_event 会在触发前把 READ 事件从 epoll 中移除。
+  // 同时 EpollPoller 强制使用 EPOLLET（边缘触发）。
+  // 因此这里必须：
+  // 1) 读到 EAGAIN/EWOULDBLOCK（drain），否则 ET 下可能丢事件；
+  // 2) 回调返回前重新注册 READ，否则后续数据不会再触发。
+  int saved_errno = 0;
+  ssize_t n = 0;
+  ssize_t total = 0;
+
+  while (true) {
+    n = input_buffer_.read_fd(socket_->fd(), &saved_errno);
+    if (n > 0) {
+      total += n;
+      continue;
+    }
+
+    if (n == 0) {
+      ZNET_LOG_INFO("TcpConnection::handle_read [{}] peer closed", name_);
+      handle_close();
+      return;
+    }
+
+    // n < 0
+    if (saved_errno == EINTR) {
+      continue;
+    }
+    if (saved_errno == EAGAIN || saved_errno == EWOULDBLOCK) {
+      break;
+    }
+
+    errno = saved_errno;
+    ZNET_LOG_ERROR("TcpConnection::handle_read [{}] error: {}", name_,
+                   strerror(errno));
+    handle_error();
+    return;
+  }
+
+  if (total > 0) {
     // 数据到达，触发消息回调（异步调度）
     if (message_callback_ && io_scheduler_) {
       std::weak_ptr<TcpConnection> weak_self = shared_from_this();
@@ -142,16 +180,13 @@ void TcpConnection::handle_read() {
         }
       });
     }
-  } else if (n == 0) {
-    // 对端关闭连接
-    ZNET_LOG_INFO("TcpConnection::handle_read [{}] peer closed", name_);
-    handle_close();
-  } else {
-    // 读取错误
-    errno = saved_errno;
-    ZNET_LOG_ERROR("TcpConnection::handle_read [{}] error: {}", name_,
-                   strerror(errno));
-    handle_error();
+  }
+
+  // 重新注册读事件，保证后续数据可继续驱动回调
+  if (io_scheduler_ && connected()) {
+    io_scheduler_->add_event(socket_->fd(), zcoroutine::FdContext::kRead,
+                             std::bind(&TcpConnection::handle_read,
+                                       shared_from_this()));
   }
 }
 
@@ -161,17 +196,24 @@ void TcpConnection::handle_write() {
     return;
   }
 
+  // 同 handle_read：写事件也会在 trigger_event 中被移除；并且使用 EPOLLET。
+  // 因此这里必须尽可能写到 EAGAIN，若仍有剩余则重新注册 WRITE。
   int saved_errno = 0;
-  ssize_t n = 0;
-  size_t remaining = 0;
-  
-  {
-    SpinlockGuard lock(output_buffer_lock_);
-    n = output_buffer_.write_fd(socket_->fd(), &saved_errno);
-    remaining = output_buffer_.readable_bytes();
-  }
+  bool wrote_any = false;
 
-  if (n > 0) {
+  while (true) {
+    ssize_t n = 0;
+    size_t remaining = 0;
+    {
+      SpinlockGuard lock(output_buffer_lock_);
+      if (output_buffer_.readable_bytes() == 0) {
+        remaining = 0;
+      } else {
+        n = output_buffer_.write_fd(socket_->fd(), &saved_errno);
+        remaining = output_buffer_.readable_bytes();
+      }
+    }
+
     if (remaining == 0) {
       // 数据全部发送完成，取消写事件
       if (io_scheduler_) {
@@ -179,7 +221,7 @@ void TcpConnection::handle_write() {
       }
 
       // 触发写完成回调（异步调度）
-      if (write_complete_callback_ && io_scheduler_) {
+      if (wrote_any && write_complete_callback_ && io_scheduler_) {
         std::weak_ptr<TcpConnection> weak_self = shared_from_this();
         auto cb = write_complete_callback_;
         io_scheduler_->schedule([weak_self, cb]() {
@@ -190,12 +232,36 @@ void TcpConnection::handle_write() {
       }
 
       if (state_.load(std::memory_order_acquire) == State::Disconnecting) {
-        // 如果正在断开连接，且数据已发送完成，则关闭写端
         shutdown_in_loop();
       }
+      return;
     }
-  } else {
-    ZNET_LOG_ERROR("TcpConnection::handle_write [{}] error", name_);
+
+    if (n > 0) {
+      wrote_any = true;
+      continue;
+    }
+
+    // n <= 0：要么 EAGAIN，要么错误
+    if (saved_errno == EINTR) {
+      continue;
+    }
+    if (saved_errno == EAGAIN || saved_errno == EWOULDBLOCK) {
+      break;
+    }
+
+    errno = saved_errno;
+    ZNET_LOG_ERROR("TcpConnection::handle_write [{}] error: {}", name_,
+                   strerror(errno));
+    handle_error();
+    return;
+  }
+
+  // 仍有数据未发送完，重新注册写事件等待下次可写
+  if (io_scheduler_ && connected()) {
+    io_scheduler_->add_event(socket_->fd(), zcoroutine::FdContext::kWrite,
+                             std::bind(&TcpConnection::handle_write,
+                                       shared_from_this()));
   }
 }
 
