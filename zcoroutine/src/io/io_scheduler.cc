@@ -128,10 +128,15 @@ int IoScheduler::add_event(int fd, FdContext::Event event,
   }
 
   // 添加事件到FdContext
-  int new_events = fd_ctx->add_event(event);
+  // 注意：FdContext::add_event 在事件已存在时会直接返回当前 events_。
+  // 因此这里必须基于“添加前”的 old_events 来决定 epoll_ctl 的 op，
+  // 否则会对已在 epoll 中的 fd 误做 EPOLL_CTL_ADD（EEXIST）并错误回滚。
+  const int old_events = fd_ctx->events();
+  const int new_events = fd_ctx->add_event(event);
 
   // 更新epoll
-  int op = (fd_ctx->events() == event) ? EPOLL_CTL_ADD : EPOLL_CTL_MOD;
+  const int op = (old_events == FdContext::kNone) ? EPOLL_CTL_ADD
+                                                  : EPOLL_CTL_MOD;
   int ret = 0;
   if (op == EPOLL_CTL_ADD) {
     ret = epoll_poller_->add_event(fd, new_events, fd_ctx.get());
@@ -144,7 +149,11 @@ int IoScheduler::add_event(int fd, FdContext::Event event,
         "IoScheduler::add_event epoll operation failed, fd={}, event={}, op={}",
         fd, FdContext::event_to_string(event),
         op == EPOLL_CTL_ADD ? "ADD" : "MOD");
-    fd_ctx->del_event(event);
+    // 只在本次确实“新添加”了该事件时才回滚；
+    // 若该事件原本就存在，回滚会把已有事件错误删除。
+    if (!(old_events & event)) {
+      fd_ctx->del_event(event);
+    }
     return -1;
   }
 
@@ -178,6 +187,13 @@ int IoScheduler::del_event(int fd, FdContext::Event event) {
   }
 
   if (ret < 0) {
+    // 收尾/close 竞态：fd 可能已关闭(EBADF)或已不在 epoll 中(ENOENT)
+    if (errno == EBADF || errno == ENOENT) {
+      ZCOROUTINE_LOG_DEBUG(
+          "IoScheduler::del_event benign epoll failure, fd={}, errno={}", fd,
+          errno);
+      return 0;
+    }
     ZCOROUTINE_LOG_ERROR(
         "IoScheduler::del_event epoll operation failed, fd={}, errno={}", fd,
         errno);
@@ -214,6 +230,12 @@ int IoScheduler::cancel_event(int fd, FdContext::Event event) {
   }
 
   if (ret < 0) {
+    if (errno == EBADF || errno == ENOENT) {
+      ZCOROUTINE_LOG_DEBUG(
+          "IoScheduler::cancel_event benign epoll failure, fd={}, errno={}",
+          fd, errno);
+      return 0;
+    }
     ZCOROUTINE_LOG_ERROR(
         "IoScheduler::cancel_event epoll operation failed, fd={}, errno={}", fd,
         errno);
@@ -251,6 +273,12 @@ int IoScheduler::cancel_all(int fd) {
   // 从 epoll 中删除
   int ret = epoll_poller_->del_event(fd);
   if (ret < 0) {
+    if (errno == EBADF || errno == ENOENT) {
+      ZCOROUTINE_LOG_DEBUG(
+          "IoScheduler::cancel_all benign epoll failure, fd={}, errno={}", fd,
+          errno);
+      return 0;
+    }
     ZCOROUTINE_LOG_ERROR(
         "IoScheduler::cancel_all epoll del_event failed, fd={}, errno={}", fd,
         errno);
@@ -292,18 +320,35 @@ void IoScheduler::trigger_event(int fd, FdContext::Event event) {
   ZCOROUTINE_LOG_DEBUG("IoScheduler::trigger_event fd={}, event={}", fd,
                        FdContext::event_to_string(event));
 
-  // 先从 FdContext 中取出并清空 EventContext，
-  // 避免回调中重新注册时被后续 del_event 清空
-  std::function<void()> callback;
-  Fiber::ptr fiber;
-  {
-    // 锁定 fd_ctx 并取出事件上下文
-    FdContext::EventContext &ctx = fd_ctx->get_event_context(event);
-    callback = std::move(ctx.callback);
-    fiber = std::move(ctx.fiber);
+  // 线程安全地取出并清空上下文，同时清除事件位
+  auto popped = fd_ctx->pop_event(event);
+  if (!popped.had_event) {
+    // 关闭/取消竞态下，epoll 可能仍上报旧事件；无需告警。
+    ZCOROUTINE_LOG_DEBUG(
+        "IoScheduler::trigger_event event not registered (likely race), fd={}, event={}",
+        fd, FdContext::event_to_string(event));
+    return;
   }
 
-  del_event(fd_ctx->fd(), event);
+  // 先更新 epoll，避免回调/协程中 re-arm 后被后续 DEL/MOD 覆盖
+  int ret = 0;
+  if (popped.remaining_events == FdContext::kNone) {
+    ret = epoll_poller_->del_event(fd_ctx->fd());
+  } else {
+    ret = epoll_poller_->mod_event(fd_ctx->fd(), popped.remaining_events,
+                                   fd_ctx.get());
+  }
+  if (ret < 0) {
+    if (errno != EBADF && errno != ENOENT) {
+      ZCOROUTINE_LOG_ERROR(
+          "IoScheduler::trigger_event epoll operation failed, fd={}, errno={}",
+          fd, errno);
+    } else {
+      ZCOROUTINE_LOG_DEBUG(
+          "IoScheduler::trigger_event benign epoll failure, fd={}, errno={}",
+          fd, errno);
+    }
+  }
 
   // 停止过程中不再调度新任务，避免退出阶段被事件/回调持续延长
   if (stopping_.load(std::memory_order_relaxed)) {
@@ -313,19 +358,21 @@ void IoScheduler::trigger_event(int fd, FdContext::Event event) {
   }
   
   // 最后触发回调或调度协程（epoll已更新，回调中可以安全地重新注册）
-  if (callback) {
+  if (popped.callback) {
     ZCOROUTINE_LOG_DEBUG(
         "IoScheduler::trigger_event executing callback: fd={}, event={}", fd,
         FdContext::event_to_string(event));
-    schedule(std::move(callback));
-  } else if (fiber) {
+    schedule(std::move(popped.callback));
+  } else if (popped.fiber) {
     ZCOROUTINE_LOG_DEBUG("IoScheduler::trigger_event scheduling fiber: fd={}, "
                          "event={}, fiber_id={}",
-                         fd, FdContext::event_to_string(event), fiber->id());
-    schedule(std::move(fiber));
+                         fd, FdContext::event_to_string(event),
+                         popped.fiber->id());
+    schedule(std::move(popped.fiber));
   } else {
-    ZCOROUTINE_LOG_WARN(
-        "IoScheduler::trigger_event no callback or fiber: fd={}, event={}", fd,
+    // event 位存在但上下文为空，通常是上层误用 add_event(nullptr) 且不在 fiber 内
+    ZCOROUTINE_LOG_DEBUG(
+        "IoScheduler::trigger_event empty context: fd={}, event={}", fd,
         FdContext::event_to_string(event));
   }
 }
@@ -396,21 +443,22 @@ void IoScheduler::io_thread_func() {
       auto *fd_ctx = static_cast<FdContext *>(ev.data.ptr);
       int fd = fd_ctx->fd();
 
-      if (ev.events & EPOLLIN) {
+      uint32_t ready_events = ev.events;
+      if (ready_events & (EPOLLERR | EPOLLHUP)) {
+        ZCOROUTINE_LOG_DEBUG(
+            "IoScheduler::io_thread_func error/hup event, fd={}", fd);
+        // 错误/挂起时，通常读写都会就绪；统一转成 IN/OUT 处理
+        ready_events |= (EPOLLIN | EPOLLOUT);
+      }
+
+      if (ready_events & EPOLLIN) {
         ZCOROUTINE_LOG_DEBUG(
             "IoScheduler::io_thread_func triggering READ event, fd={}", fd);
         trigger_event(fd, FdContext::kRead);
       }
-      if (ev.events & EPOLLOUT) {
+      if (ready_events & EPOLLOUT) {
         ZCOROUTINE_LOG_DEBUG(
             "IoScheduler::io_thread_func triggering WRITE event, fd={}", fd);
-        trigger_event(fd, FdContext::kWrite);
-      }
-      if (ev.events & (EPOLLERR | EPOLLHUP)) {
-        ZCOROUTINE_LOG_WARN(
-            "IoScheduler::io_thread_func error/hup event, fd={}", fd);
-        // 错误事件，同时触发读写
-        trigger_event(fd, FdContext::kRead);
         trigger_event(fd, FdContext::kWrite);
       }
     }

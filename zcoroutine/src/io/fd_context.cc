@@ -11,18 +11,20 @@ FdContext::FdContext(int fd) : fd_(fd) {
 int FdContext::add_event(Event event) {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  int current_events = events_.load(std::memory_order_relaxed);
+
   // 检查事件是否已存在
-  if (events_ & event) {
+  if (current_events & event) {
     ZCOROUTINE_LOG_WARN("FdContext::add_event event already exists: fd={}, "
                         "event={}, current_events={}",
-                        fd_, event_to_string(event), events_);
-    return events_;
+                        fd_, event_to_string(event), current_events);
+    return current_events;
   }
 
   // 添加事件
-  int old_events = events_;
-  int new_events = events_ | event;
-  events_ = new_events;
+  int old_events = current_events;
+  int new_events = current_events | event;
+  events_.store(new_events, std::memory_order_relaxed);
 
   ZCOROUTINE_LOG_DEBUG("FdContext::add_event success: fd={}, event={}, "
                        "old_events={}, new_events={}",
@@ -34,18 +36,20 @@ int FdContext::add_event(Event event) {
 int FdContext::del_event(Event event) {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  int current_events = events_.load(std::memory_order_relaxed);
+
   // 检查事件是否存在
-  if (!(events_ & event)) {
+  if (!(current_events & event)) {
     ZCOROUTINE_LOG_DEBUG("FdContext::del_event event not exists: fd={}, "
                          "event={}, current_events={}",
-                         fd_, event_to_string(event), events_);
-    return events_;
+                         fd_, event_to_string(event), current_events);
+    return current_events;
   }
 
   // 删除事件
-  int old_events = events_;
-  int new_events = events_ & ~event;
-  events_ = new_events;
+  int old_events = current_events;
+  int new_events = current_events & ~event;
+  events_.store(new_events, std::memory_order_relaxed);
 
   // 重置对应的事件上下文
   if (event == kRead) {
@@ -64,18 +68,44 @@ int FdContext::del_event(Event event) {
   return new_events;
 }
 
+FdContext::PopResult FdContext::pop_event(Event event) {
+  PopResult result;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    int current_events = events_.load(std::memory_order_relaxed);
+    if (!(current_events & event)) {
+      result.remaining_events = current_events;
+      result.had_event = false;
+      return result;
+    }
+
+    EventContext &ctx = get_event_context(event);
+    result.callback = std::move(ctx.callback);
+    result.fiber = std::move(ctx.fiber);
+    reset_event_context(ctx);
+
+    current_events &= ~event;
+    events_.store(current_events, std::memory_order_relaxed);
+
+    result.remaining_events = current_events;
+    result.had_event = true;
+  }
+  return result;
+}
+
 int FdContext::cancel_event(Event event) {
   int new_events = 0;
   std::function<void()> callback = nullptr;
   Fiber::ptr fiber = nullptr;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    int current_events = events_.load(std::memory_order_relaxed);
     // 检查事件是否存在
-    if (!(events_ & event)) {
+    if (!(current_events & event)) {
       ZCOROUTINE_LOG_DEBUG("FdContext::cancel_event event not exists: fd={}, "
                            "event={}, current_events={}",
-                           fd_, event_to_string(event), events_);
-      return events_;
+                           fd_, event_to_string(event), current_events);
+      return current_events;
     }
 
     // 获取事件上下文
@@ -86,9 +116,9 @@ int FdContext::cancel_event(Event event) {
     fiber = std::move(ctx.fiber);
 
     // 删除事件标志并重置事件上下文
-    int old_events = events_;
-    new_events = events_ & ~event;
-    events_ = new_events;
+    int old_events = current_events;
+    new_events = current_events & ~event;
+    events_.store(new_events, std::memory_order_relaxed);
 
     reset_event_context(ctx);
 
@@ -134,16 +164,18 @@ void FdContext::cancel_all() {
     int read_triggered = 0;
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (events_ == kNone) {
+    int current_events = events_.load(std::memory_order_relaxed);
+
+    if (current_events == kNone) {
       ZCOROUTINE_LOG_DEBUG("FdContext::cancel_all no events to cancel: fd={}",
                            fd_);
       return;
     }
 
-    int old_events = events_;
+    int old_events = current_events;
 
     // 取消读事件
-    if (events_ & kRead) {
+    if (current_events & kRead) {
       EventContext &ctx = read_ctx_;
       read_callback = std::move(ctx.callback);
       read_fiber = std::move(ctx.fiber);
@@ -154,7 +186,7 @@ void FdContext::cancel_all() {
     }
 
     // 取消写事件
-    if (events_ & kWrite) {
+    if (current_events & kWrite) {
       EventContext &ctx = write_ctx_;
       write_callback = std::move(ctx.callback);
       write_fiber = std::move(ctx.fiber);
@@ -164,7 +196,7 @@ void FdContext::cancel_all() {
       }
     }
 
-    events_ = kNone;
+    events_.store(kNone, std::memory_order_relaxed);
 
     ZCOROUTINE_LOG_DEBUG("FdContext::cancel_all complete: fd={}, "
                          "old_events={}, read_triggered={}, write_triggered={}",
@@ -211,11 +243,12 @@ void FdContext::trigger_event(Event event) {
   Fiber::ptr fiber = nullptr;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    int current_events = events_.load(std::memory_order_relaxed);
     // 检查事件是否存在
-    if (!(events_ & event)) {
+    if (!(current_events & event)) {
       ZCOROUTINE_LOG_DEBUG("FdContext::trigger_event event not registered: "
                            "fd={}, event={}, current_events={}",
-                           fd_, event_to_string(event), events_);
+                           fd_, event_to_string(event), current_events);
       return;
     }
 
@@ -227,12 +260,14 @@ void FdContext::trigger_event(Event event) {
     fiber = std::move(ctx.fiber);
 
     // 删除事件标志
-    int old_events = events_;
-    events_ = events_ & ~event;
+    int old_events = current_events;
+    current_events &= ~event;
+    events_.store(current_events, std::memory_order_relaxed);
 
     ZCOROUTINE_LOG_DEBUG("FdContext::trigger_event deleted event: fd={}, "
                          "event={}, old_events={}, new_events={}",
-                         fd_, event_to_string(event), old_events, events_);
+               fd_, event_to_string(event), old_events,
+               current_events);
   }
 
   // 触发回调或调度协程

@@ -3,6 +3,7 @@
 
 #include <sys/epoll.h>
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -69,7 +70,17 @@ public:
   /**
    * @brief 获取当前事件
    */
-  int events() const { return events_; }
+  int events() const { return events_.load(std::memory_order_relaxed); }
+
+  struct PopResult {
+    std::function<void()> callback;
+    std::shared_ptr<Fiber> fiber;
+    int remaining_events = kNone;
+    bool had_event = false;
+  };
+
+  // 线程安全：取出并清空指定事件的 callback/fiber，同时清除事件位。
+  PopResult pop_event(Event event);
 
   /**
    * @brief 添加事件
@@ -119,7 +130,7 @@ public:
 private:
   // 热数据：最常访问，放在开头
   int fd_;             // 文件描述符 - 4字节
-  int events_ = kNone; // 当前注册的事件 - 4字节
+  std::atomic<int> events_{kNone}; // 当前注册的事件
 
   // 事件上下文：紧接着热数据
   EventContext read_ctx_;  // 读事件上下文 - 32字节
