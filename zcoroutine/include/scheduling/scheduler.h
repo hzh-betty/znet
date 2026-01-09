@@ -10,11 +10,12 @@
 #include <vector>
 
 #include "runtime/fiber.h"
-#include "scheduling/task_queue.h"
+#include "scheduling/task_queue.h" // for Task
 #include "util/thread_context.h"
-#include "util/zcoroutine_logger.h"
 
 namespace zcoroutine {
+
+class WorkStealingQueue;
 
 /**
  * @brief 调度器类
@@ -78,11 +79,7 @@ public:
                 typename std::decay<F>::type, Fiber::ptr>::value>::type>
   void schedule(F &&f, Args &&...args) {
     auto func = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
-
-    task_queue_->push(Task(std::move(func)));
-
-    ZCOROUTINE_LOG_DEBUG("Scheduler[{}] scheduled task, queue_size={}", name_,
-                         task_queue_->size());
+    enqueue(Task(std::move(func)));
   }
 
   /**
@@ -93,7 +90,9 @@ public:
   /**
    * @brief 获取待处理任务数
    */
-  size_t pending_task_count() const { return task_queue_->size(); }
+  size_t pending_task_count() const {
+    return pending_tasks_.load(std::memory_order_relaxed);
+  }
 
   /**
    * @brief 获取当前调度器（线程本地）
@@ -111,11 +110,40 @@ public:
    */
   bool is_shared_stack() const { return use_shared_stack_; }
 
-   /**
+  /**
    * @brief 获取共享栈指针（仅当共享栈模式时有效）
    * @return 共享栈指针
    */
-  SharedStack* get_shared_stack() const { return ThreadContext::get_shared_stack(); }
+  SharedStack *get_shared_stack() const {
+    return ThreadContext::get_shared_stack();
+  }
+
+private:
+  /**
+   * @brief 内部方法：将任务加入调度队列
+   * @param task 任务对象
+   */
+  void enqueue(Task &&task);
+
+  /**
+   * @brief 内部方法：获取指定worker的工作队列指针
+   * @param worker_id worker线程ID
+   * @return 工作队列指针，若无则返回nullptr
+   */
+  void register_work_queue(int worker_id, WorkStealingQueue *queue);
+
+  /**
+   * @brief 内部方法：获取指定worker的工作队列指针
+   * @param worker_id worker线程ID
+   * @return 工作队列指针，若无则返回nullptr
+   */
+  WorkStealingQueue *get_next_queue(int worker_id) const;
+
+  /**
+   * @brief 内部方法：停止所有工作队列
+   */
+  void stop_work_queues();
+
 protected:
   /**
    * @brief 工作线程主循环
@@ -132,11 +160,16 @@ protected:
   std::string name_;                                  // 调度器名称
   int thread_count_;                                  // 线程数量
   std::vector<std::unique_ptr<std::thread>> threads_; // 线程池
-  std::unique_ptr<TaskQueue> task_queue_;             // 任务队列
+
+  std::atomic<uint32_t> rr_enqueue_{0};
+  std::atomic<size_t> pending_tasks_{0};
 
   std::atomic<bool> stopping_;           // 停止标志
   std::atomic<int> active_thread_count_; // 活跃线程数
   std::atomic<int> idle_thread_count_;   // 空闲线程数
+
+  std::vector<std::atomic<WorkStealingQueue *>>
+      work_queues_; // 每个 worker 的队列指针注册表
 
   // 共享栈相关
   bool use_shared_stack_ = false; // 是否使用共享栈模式

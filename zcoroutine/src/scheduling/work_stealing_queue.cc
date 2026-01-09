@@ -11,6 +11,8 @@ void WorkStealingQueue::push(Task &&task) {
     tasks_.push_back(std::move(task));
   }
   size_.fetch_add(1, std::memory_order_relaxed);
+
+  // 如果有等待者则唤醒，减少无效的notify调用
   if (waiters_.load(std::memory_order_acquire) > 0) {
     cv_.notify_one();
   }
@@ -75,6 +77,7 @@ size_t WorkStealingQueue::wait_pop_batch(Task *out, size_t max_count,
 
     waiters_.fetch_sub(1, std::memory_order_release);
 
+    // 如果超时返回，队列仍然为空则返回0
     if (tasks_.empty()) {
       return 0;
     }

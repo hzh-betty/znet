@@ -5,6 +5,7 @@
 #include "runtime/context.h"
 #include "runtime/fiber.h"
 #include "runtime/shared_stack.h"
+#include "scheduling/work_stealing_queue.h"
 #include "util/zcoroutine_logger.h"
 namespace zcoroutine {
 
@@ -66,6 +67,22 @@ void ThreadContext::set_scheduler(Scheduler *scheduler) {
 
 Scheduler *ThreadContext::get_scheduler() {
   return get_current()->scheduler_ctx_.scheduler;
+}
+
+void ThreadContext::set_worker_id(int id) {
+  get_current()->scheduler_ctx_.worker_id = id;
+}
+
+int ThreadContext::get_worker_id() {
+  return get_current()->scheduler_ctx_.worker_id;
+}
+
+WorkStealingQueue *ThreadContext::get_work_queue() {
+  auto *ctx = get_current();
+  if (!ctx->scheduler_ctx_.work_queue) {
+    ctx->scheduler_ctx_.work_queue = std::make_unique<WorkStealingQueue>();
+  }
+  return ctx->scheduler_ctx_.work_queue.get();
 }
 
 void ThreadContext::set_stack_mode(StackMode mode) {

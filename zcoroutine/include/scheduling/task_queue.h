@@ -116,8 +116,7 @@ public:
   void stop();
 
 private:
-  // 缓存行对齐，避免false sharing
-  alignas(64) mutable Spinlock spinlock_; // 自旋锁保护队列
+  mutable Spinlock spinlock_; // 自旋锁保护队列
   std::condition_variable_any cv_;        // 条件变量
   std::queue<Task> tasks_;                // 任务队列
 

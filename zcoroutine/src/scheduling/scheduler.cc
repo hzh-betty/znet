@@ -1,9 +1,12 @@
 #include "scheduling/scheduler.h"
 
+#include <cstdint>
+#include <random>
 #include <utility>
 
 #include "hook/hook.h"
 #include "runtime/fiber_pool.h"
+#include "scheduling/work_stealing_queue.h"
 #include "util/thread_context.h"
 #include "util/zcoroutine_logger.h"
 
@@ -11,12 +14,12 @@ namespace zcoroutine {
 
 Scheduler::Scheduler(int thread_count, std::string name, bool use_shared_stack)
     : name_(std::move(name)), thread_count_(thread_count),
-      task_queue_(std::make_unique<TaskQueue>()), stopping_(true),
-      active_thread_count_(0), idle_thread_count_(0),
+      stopping_(true), active_thread_count_(0), idle_thread_count_(0),
+      work_queues_(static_cast<size_t>(thread_count_)),
       use_shared_stack_(use_shared_stack) {
 
+
   // 创建主协程（保存线程的原始上下文）
-  // 注意：必须使用shared_ptr管理，因为ThreadContext使用weak_ptr持有
   static Fiber::ptr main_fiber(new Fiber());
   ThreadContext::set_main_fiber(main_fiber);
   ThreadContext::set_current_fiber(main_fiber);
@@ -32,6 +35,46 @@ Scheduler::~Scheduler() {
   ZCOROUTINE_LOG_DEBUG("Scheduler[{}] destroying", name_);
   stop();
   ZCOROUTINE_LOG_INFO("Scheduler[{}] destroyed", name_);
+}
+
+void Scheduler::enqueue(Task &&task) {
+  if (!task.is_valid()) {
+    ZCOROUTINE_LOG_WARN("Scheduler::enqueue received invalid task");
+    return;
+  }
+
+  WorkStealingQueue *q = ThreadContext::get_work_queue();
+  q->push(std::move(task));
+  pending_tasks_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void Scheduler::register_work_queue(int worker_id, WorkStealingQueue *queue) {
+  if (worker_id < 0 || worker_id >= thread_count_) {
+    return;
+  }
+  work_queues_[static_cast<size_t>(worker_id)].store(queue,
+                                                     std::memory_order_release);
+  ZCOROUTINE_LOG_DEBUG("Scheduler[{}] registered work queue for worker_id={}",
+                       name_, worker_id);
+}
+
+WorkStealingQueue *Scheduler::get_next_queue(int worker_id) const {
+  if (worker_id < 0 || worker_id >= thread_count_) {
+    return nullptr;
+  }
+  return work_queues_[static_cast<size_t>(worker_id)].load(
+      std::memory_order_acquire);
+  ZCOROUTINE_LOG_DEBUG("Scheduler[{}] retrieved work queue for worker_id={}",
+                       name_, worker_id);
+}
+
+void Scheduler::stop_work_queues() {
+  for (int i = 0; i < thread_count_; ++i) {
+    if (auto *q = get_next_queue(i)) {
+      q->stop();
+    }
+  }
+  ZCOROUTINE_LOG_DEBUG("Scheduler[{}] stopped all work queues", name_);
 }
 
 void Scheduler::start() {
@@ -51,6 +94,7 @@ void Scheduler::start() {
     auto thread = std::make_unique<std::thread>([this, i]() {
       // 设置线程的调度器
       set_this(this);
+      ThreadContext::set_worker_id(i);
 
       ZCOROUTINE_LOG_DEBUG("Scheduler[{}] worker thread {} started", name_, i);
       this->run();
@@ -70,13 +114,13 @@ void Scheduler::stop() {
   }
 
   ZCOROUTINE_LOG_INFO("Scheduler[{}] stopping with {} pending tasks...", name_,
-                      task_queue_->size());
+                      pending_tasks_.load(std::memory_order_relaxed));
 
   // 先设置停止标志，避免 stop 期间被持续调度新任务导致无法退出
   stopping_ = true;
 
-  // 停止任务队列，唤醒所有等待的线程（worker 将继续把队列中已有任务尽量处理完）
-  task_queue_->stop();
+  // 停止并唤醒所有队列等待者
+  stop_work_queues();
 
   // 等待所有线程结束
   for (size_t i = 0; i < threads_.size(); ++i) {
@@ -97,11 +141,10 @@ void Scheduler::schedule(const Fiber::ptr &fiber) {
     return;
   }
 
-  ZCOROUTINE_LOG_DEBUG(
-      "Scheduler[{}] scheduled fiber name={}, id={}, queue_size={}", name_,
-      fiber->name(), fiber->id(), task_queue_->size());
+  ZCOROUTINE_LOG_DEBUG("Scheduler[{}] scheduled fiber name={}, id={}", name_,
+                       fiber->name(), fiber->id());
 
-  task_queue_->push(Task(fiber));
+  enqueue(Task(fiber));
 }
 
 void Scheduler::schedule(Fiber::ptr &&fiber) {
@@ -110,11 +153,10 @@ void Scheduler::schedule(Fiber::ptr &&fiber) {
     return;
   }
 
-  ZCOROUTINE_LOG_DEBUG(
-      "Scheduler[{}] scheduled fiber name={}, id={}, queue_size={}", name_,
-      fiber->name(), fiber->id(), task_queue_->size());
+  ZCOROUTINE_LOG_DEBUG("Scheduler[{}] scheduled fiber name={}, id={}", name_,
+                       fiber->name(), fiber->id());
 
-  task_queue_->push(Task(std::move(fiber)));
+  enqueue(Task(std::move(fiber)));
 }
 
 Scheduler *Scheduler::get_this() { return ThreadContext::get_scheduler(); }
@@ -126,8 +168,15 @@ void Scheduler::set_this(Scheduler *scheduler) {
 void Scheduler::run() {
   ZCOROUTINE_LOG_DEBUG("Scheduler[{}] worker thread entering run loop", name_);
 
-  // 开启hook，让worker线程可以非安全地切换协程
+  // 开启hook，让worker线程可以使用协程版的系统调用
   set_hook_enable(true);
+
+  // 创建并发布本线程的 work-stealing 队列
+  const int id = ThreadContext::get_worker_id();
+  if (id >= 0 && id < thread_count_) {
+    WorkStealingQueue *q_ptr = ThreadContext::get_work_queue();
+    register_work_queue(id, q_ptr);
+  }
 
   // 创建调度器协程，它将运行调度循环
   // 注意：scheduler_fiber 必须使用独立栈，因为它负责协程切换
@@ -178,47 +227,82 @@ void Scheduler::schedule_loop() {
 
   // 批量处理优化：减少锁竞争
   static constexpr size_t kBatchSize = 8;
-  static constexpr int kWaitTimeoutMs = 100; // 超时等待100ms
+  static constexpr size_t kStealBatch = 4;
   Task tasks[kBatchSize];
+  const int self_id = ThreadContext::get_worker_id();
+  WorkStealingQueue *local_queue = ThreadContext::get_work_queue();
+  const int worker_count = thread_count_;
+
+  // 每线程随机源
+  thread_local std::mt19937 rng(
+      static_cast<uint32_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())));
 
   while (true) {
-    // 如果正在停止且任务队列为空，则退出循环
-    if (stopping_ && task_queue_->empty())
+    // 如果正在停止且无待处理任务，则退出循环
+    if (stopping_ && pending_tasks_.load(std::memory_order_relaxed) == 0) {
       break;
+    }
 
-    // 尝试批量获取任务
     size_t batch_count = 0;
-    for (size_t i = 0; i < kBatchSize; ++i) {
-      if (task_queue_->try_pop(tasks[i])) {
-        ++batch_count;
-      } else {
-        break;
-      }
+
+    // 1) 先从本地队列批量取任务（LIFO）
+    if (local_queue) {
+      batch_count = local_queue->pop_batch(tasks, kBatchSize);
     }
+    ZCOROUTINE_LOG_DEBUG(
+        "Scheduler[{}] worker_id={} fetched {} tasks from local queue",
+        name_, self_id, batch_count);
 
-    // 如果批量获取失败，带超时等待一个任务
-    if (batch_count == 0) {
-      Task task;
-      // 使用超时等待，避免永久阻塞导致的频繁唤醒
-      if (!task_queue_->pop(task, kWaitTimeoutMs)) {
+    // 2) 本地为空则尝试批量窃取
+    if (batch_count == 0 && worker_count > 1 && self_id >= 0) {
+      std::uniform_int_distribution<int> dist(0, worker_count - 1);
 
-        if (stopping_ && task_queue_->empty()) {
-          ZCOROUTINE_LOG_DEBUG(
-              "Scheduler[{}] task queue stopped, exiting schedule_loop", name_);
-          break;
+      int v1 = self_id;
+      int v2 = self_id;
+      // 随机选择两个受害者线程（不等于自己）
+      while (v1 == self_id) {
+        v1 = dist(rng);
+      }
+      while (v2 == self_id || v2 == v1) {
+        v2 = dist(rng);
+      }
+
+      ZCOROUTINE_LOG_DEBUG("Scheduler[{}] worker_id={} attempting to steal tasks from victims {} and {}",
+                           name_, self_id, v1, v2);
+
+      // 获取剩余任务较多的受害者队列进行窃取
+      WorkStealingQueue *q1 = get_next_queue(v1);
+      WorkStealingQueue *q2 = get_next_queue(v2);
+      if (q1 && q2) {
+        const size_t s1 = q1->approx_size();
+        const size_t s2 = q2->approx_size();
+        WorkStealingQueue *victim_q = (s1 >= s2) ? q1 : q2;
+
+        if (victim_q && victim_q->approx_size() > 0) {
+          Task stolen[kStealBatch];
+          const size_t n = victim_q->steal_batch(stolen, kStealBatch);
+          ZCOROUTINE_LOG_DEBUG("Scheduler[{}] worker_id={} stole {} tasks from victim queue",
+                               name_, self_id, n);
+          for (size_t i = 0; i < n && batch_count < kBatchSize; ++i) {
+            tasks[batch_count++] = std::move(stolen[i]);
+          }
         }
-        continue;
       }
-
-      if (!task.is_valid()) {
-        ZCOROUTINE_LOG_DEBUG("Scheduler[{}] received invalid task, skipping",
-                             name_);
-        continue;
-      }
-
-      tasks[0] = std::move(task);
-      batch_count = 1;
     }
+
+    // 3) 没有任务则在本地队列上等待
+    if (batch_count == 0) {
+      idle_thread_count_.fetch_add(1, std::memory_order_relaxed);
+
+      // 再次尝试从本地队列等待取任务, 避免遗漏新入队任务
+      batch_count = local_queue->wait_pop_batch(tasks, kBatchSize, 100);
+      idle_thread_count_.fetch_sub(1, std::memory_order_relaxed);
+      if (batch_count == 0) {
+        continue;
+      }
+    }
+
+    pending_tasks_.fetch_sub(batch_count, std::memory_order_relaxed);
 
     // 批量执行任务
     for (size_t i = 0; i < batch_count; ++i) {
