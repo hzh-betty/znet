@@ -41,10 +41,6 @@ protected:
   Scheduler::ptr scheduler_;
 };
 
-// ============================================================================
-// 与调度器集成测试
-// ============================================================================
-
 // 测试 1: 将协程池与调度器一起使用
 TEST_F(FiberPoolIntegrationTest, UseWithScheduler) {
   auto &pool = FiberPool::get_instance();
@@ -313,7 +309,7 @@ TEST_F(FiberPoolIntegrationTest, MultipleSchedulers) {
 
 int main(int argc, char **argv) {
   // 初始化日志
-  zcoroutine::init_logger(zlog::LogLevel::value::INFO);
+  zcoroutine::init_logger(zlog::LogLevel::value::DEBUG);
 
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

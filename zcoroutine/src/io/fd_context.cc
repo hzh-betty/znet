@@ -73,12 +73,14 @@ FdContext::PopResult FdContext::pop_event(Event event) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     int current_events = events_.load(std::memory_order_relaxed);
+    // 检查事件是否存在
     if (!(current_events & event)) {
       result.remaining_events = current_events;
       result.had_event = false;
       return result;
     }
 
+    // 获取事件上下文并清空对应的事件上下文
     EventContext &ctx = get_event_context(event);
     result.callback = std::move(ctx.callback);
     result.fiber = std::move(ctx.fiber);
@@ -126,17 +128,22 @@ int FdContext::cancel_event(Event event) {
                          "old_events={}, new_events={}",
                          fd_, event_to_string(event), old_events, new_events);
   }
-
+  
+  auto *scheduler = Scheduler::get_this();
   if (callback) {
     ZCOROUTINE_LOG_DEBUG(
         "FdContext::cancel_event executing callback: fd={}, event={}", fd_,
         event_to_string(event));
-    callback();
+    if (scheduler) {
+      scheduler->schedule(std::move(callback));
+    } else {
+      // 非调度线程（例如单测）场景下没有 TLS Scheduler，直接同步执行回调。
+      callback();
+    }
   } else if (fiber) {
     ZCOROUTINE_LOG_DEBUG("FdContext::cancel_event scheduling fiber: fd={}, "
                          "event={}, fiber_id={}",
                          fd_, event_to_string(event), fiber->id());
-    Scheduler *scheduler = Scheduler::get_this();
     if (scheduler) {
       scheduler->schedule(std::move(fiber));
     } else {
@@ -203,12 +210,16 @@ void FdContext::cancel_all() {
                          fd_, old_events, read_triggered, write_triggered);
   }
 
-  Scheduler *scheduler = Scheduler::get_this();
+  auto *scheduler = Scheduler::get_this();
 
   if (read_callback) {
     ZCOROUTINE_LOG_DEBUG("FdContext::cancel_all executing READ callback: fd={}",
                          fd_);
-    read_callback();
+    if (scheduler) {
+      scheduler->schedule(std::move(read_callback));
+    } else {
+      read_callback();
+    }
   } else if (read_fiber) {
     ZCOROUTINE_LOG_DEBUG(
         "FdContext::cancel_all scheduling READ fiber: fd={}, fiber_id={}", fd_,
@@ -224,7 +235,11 @@ void FdContext::cancel_all() {
   if (write_callback) {
     ZCOROUTINE_LOG_DEBUG(
         "FdContext::cancel_all executing WRITE callback: fd={}", fd_);
-    write_callback();
+    if (scheduler) {
+      scheduler->schedule(std::move(write_callback));
+    } else {
+      write_callback();
+    }
   } else if (write_fiber) {
     ZCOROUTINE_LOG_DEBUG(
         "FdContext::cancel_all scheduling WRITE fiber: fd={}, fiber_id={}", fd_,
@@ -270,17 +285,21 @@ void FdContext::trigger_event(Event event) {
                current_events);
   }
 
+  auto *scheduler = Scheduler::get_this();
   // 触发回调或调度协程
   if (callback) {
     ZCOROUTINE_LOG_DEBUG(
         "FdContext::trigger_event executing callback: fd={}, event={}", fd_,
         event_to_string(event));
-    callback();
+    if (scheduler) {
+      scheduler->schedule(std::move(callback));
+    } else {
+      callback();
+    }
   } else if (fiber) {
     ZCOROUTINE_LOG_DEBUG("FdContext::trigger_event scheduling fiber: fd={}, "
                          "event={}, fiber_id={}",
                          fd_, event_to_string(event), fiber->id());
-    Scheduler *scheduler = Scheduler::get_this();
     if (scheduler) {
       scheduler->schedule(std::move(fiber));
     } else {

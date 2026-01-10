@@ -413,6 +413,33 @@ int connect_with_timeout(int fd, const struct sockaddr *addr, socklen_t addrlen,
         winfo);
   }
 
+  // yield 前快速检测：如果 connect 已经完成（常见于本地回环/同机连接），直接返回。
+  // 注意：SO_ERROR==0 也可能仍在连接中，所以需要配合 getpeername 判定。
+  // {
+  //   int sock_err = 0;
+  //   socklen_t sock_len = sizeof(sock_err);
+  //   if (getsockopt_f(fd, SOL_SOCKET, SO_ERROR, &sock_err, &sock_len) == 0) {
+  //     if (sock_err != 0) {
+  //       iom->del_event(fd, zcoroutine::FdContext::kWrite);
+  //       if (timer) {
+  //         timer->cancel();
+  //       }
+  //       errno = sock_err;
+  //       return -1;
+  //     }
+
+  //     sockaddr_storage peer_addr;
+  //     socklen_t peer_len = sizeof(peer_addr);
+  //     if (getpeername(fd, reinterpret_cast<sockaddr *>(&peer_addr),
+  //                     &peer_len) == 0) {
+  //       iom->del_event(fd, zcoroutine::FdContext::kWrite);
+  //       if (timer) {
+  //         timer->cancel();
+  //       }
+  //       return 0;
+  //     }
+  //   }
+  // }
   // 添加写事件监听
   int add_event_ret = iom->add_event(fd, zcoroutine::FdContext::kWrite);
   if (add_event_ret != 0) {

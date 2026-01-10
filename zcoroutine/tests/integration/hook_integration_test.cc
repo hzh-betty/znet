@@ -962,7 +962,12 @@ TEST_F(HookIntegrationTest, ConnectImmediateSuccess) {
     close(client_fd);
 
   // Wait a bit for coroutine to finish updating atomic
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  auto wait_start = std::chrono::steady_clock::now();
+  while (connect_ret.load() == -1 &&
+         std::chrono::steady_clock::now() - wait_start <
+             std::chrono::milliseconds(1000)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
 
   EXPECT_GE(connect_ret.load(), 0);
   close(listen_fd);

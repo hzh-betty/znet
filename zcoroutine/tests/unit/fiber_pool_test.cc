@@ -28,9 +28,6 @@ protected:
   }
 };
 
-// ============================================================================
-// 基本功能测试
-// ============================================================================
 
 // 测试 1: 从池中获取协程（第一次 - 应该创建新的）
 TEST_F(FiberPoolTest, GetFiberFirstTime) {
@@ -111,9 +108,6 @@ TEST_F(FiberPoolTest, ReturnNullFiber) {
   EXPECT_EQ(pool.size(), 0);
 }
 
-// ============================================================================
-// 容量管理测试
-// ============================================================================
 
 // 测试 6: 设置和获取最大容量
 TEST_F(FiberPoolTest, SetMaxCapacity) {
@@ -189,9 +183,6 @@ TEST_F(FiberPoolTest, ClearPool) {
   EXPECT_EQ(pool.size(), 0);
 }
 
-// ============================================================================
-// 统计测试
-// ============================================================================
 
 // 测试 10: 跟踪创建总数
 TEST_F(FiberPoolTest, TotalCreated) {
@@ -411,7 +402,7 @@ TEST_F(FiberPoolTest, SingletonInstance) {
 
 int main(int argc, char **argv) {
   // Initialize logger
-  zcoroutine::init_logger(zlog::LogLevel::value::INFO);
+  zcoroutine::init_logger(zlog::LogLevel::value::DEBUG);
 
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "io/fd_context_table.h"
+#include "scheduling/scheduler.h"
 #include "util/zcoroutine_logger.h"
 namespace zcoroutine {
 FdContext::ptr IoScheduler::get_fd_context(int fd, bool auto_create) {

@@ -40,7 +40,6 @@ protected:
   FdContext::ptr ctx2_;
 };
 
-// ==================== 基础功能测试 ====================
 
 // 测试1：创建FdContext
 TEST_F(FdContextTest, CreateFdContext) {
