@@ -169,7 +169,11 @@ protected:
   std::atomic<int> idle_thread_count_;   // 空闲线程数
 
   std::vector<std::atomic<WorkStealingQueue *>>
-      work_queues_; // 每个 worker 的队列指针注册表
+      work_queues_; // 队列指针注册表：0..thread_count_-1 为 worker，thread_count_ 为主线程
+
+  // 每个 Scheduler 独立拥有的主线程队列（用于外部线程投递任务），
+  // 避免多个 Scheduler 在同一线程启动时共享 ThreadContext::work_queue 导致串队列。
+  std::unique_ptr<WorkStealingQueue> main_queue_;
 
   // 共享栈相关
   bool use_shared_stack_ = false; // 是否使用共享栈模式

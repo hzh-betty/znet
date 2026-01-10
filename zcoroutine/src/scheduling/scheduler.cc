@@ -1,6 +1,7 @@
 #include "scheduling/scheduler.h"
 
 #include <cstdint>
+#include <memory>
 #include <random>
 #include <utility>
 
@@ -15,8 +16,9 @@ namespace zcoroutine {
 Scheduler::Scheduler(int thread_count, std::string name, bool use_shared_stack)
     : name_(std::move(name)), thread_count_(thread_count),
       stopping_(true), active_thread_count_(0), idle_thread_count_(0),
-      work_queues_(static_cast<size_t>(thread_count_)),
-      use_shared_stack_(use_shared_stack) {
+  work_queues_(static_cast<size_t>(thread_count_ + 1)),
+    main_queue_(std::make_unique<WorkStealingQueue>()),
+    use_shared_stack_(use_shared_stack) {
 
 
   // 创建主协程（保存线程的原始上下文）
@@ -25,10 +27,13 @@ Scheduler::Scheduler(int thread_count, std::string name, bool use_shared_stack)
   ThreadContext::set_current_fiber(main_fiber);
 
   // 共享栈将在每个worker线程的run()中独立创建
-
   ZCOROUTINE_LOG_INFO(
       "Scheduler[{}] created with thread_count={}, shared_stack={}", name_,
       thread_count_, use_shared_stack_);
+
+  // 注册本 Scheduler 的主队列（用于外部线程投递任务）。
+  // 不能使用 ThreadContext::get_work_queue()，否则同一线程启动多个 Scheduler 会共享同一 TLS 队列。
+  register_work_queue(thread_count_, main_queue_.get());
 }
 
 Scheduler::~Scheduler() {
@@ -43,13 +48,25 @@ void Scheduler::enqueue(Task &&task) {
     return;
   }
 
-  WorkStealingQueue *q = ThreadContext::get_work_queue();
+  // 若当前线程正在运行本 Scheduler（即 worker 线程），优先投递到本线程本地队列。
+  WorkStealingQueue *q = nullptr;
+  if (Scheduler::get_this() == this) {
+    q = ThreadContext::get_work_queue();
+  }
+  if (!q) {
+    q = main_queue_.get();
+  }
+  if (!q) {
+    ZCOROUTINE_LOG_ERROR("Scheduler[{}] enqueue failed: main queue not initialized", name_);
+    return;
+  }
+
   q->push(std::move(task));
   pending_tasks_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void Scheduler::register_work_queue(int worker_id, WorkStealingQueue *queue) {
-  if (worker_id < 0 || worker_id >= thread_count_) {
+  if (worker_id < 0 || worker_id > thread_count_) {
     return;
   }
   work_queues_[static_cast<size_t>(worker_id)].store(queue,
@@ -59,17 +76,16 @@ void Scheduler::register_work_queue(int worker_id, WorkStealingQueue *queue) {
 }
 
 WorkStealingQueue *Scheduler::get_next_queue(int worker_id) const {
-  if (worker_id < 0 || worker_id >= thread_count_) {
+  if (worker_id < 0 || worker_id > thread_count_) {
     return nullptr;
   }
   return work_queues_[static_cast<size_t>(worker_id)].load(
       std::memory_order_acquire);
-  ZCOROUTINE_LOG_DEBUG("Scheduler[{}] retrieved work queue for worker_id={}",
-                       name_, worker_id);
 }
 
 void Scheduler::stop_work_queues() {
-  for (int i = 0; i < thread_count_; ++i) {
+  // 停止所有工作队列，包括主线程队列
+  for (int i = 0; i <= thread_count_; ++i) {
     if (auto *q = get_next_queue(i)) {
       q->stop();
     }
@@ -232,6 +248,7 @@ void Scheduler::schedule_loop() {
   const int self_id = ThreadContext::get_worker_id();
   WorkStealingQueue *local_queue = ThreadContext::get_work_queue();
   const int worker_count = thread_count_;
+  const int main_queue_id = thread_count_;
 
   // 每线程随机源
   thread_local std::mt19937 rng(
@@ -249,42 +266,83 @@ void Scheduler::schedule_loop() {
     if (local_queue) {
       batch_count = local_queue->pop_batch(tasks, kBatchSize);
     }
-    ZCOROUTINE_LOG_DEBUG(
-        "Scheduler[{}] worker_id={} fetched {} tasks from local queue",
-        name_, self_id, batch_count);
+    if (batch_count > 0) {
+      ZCOROUTINE_LOG_DEBUG(
+          "Scheduler[{}] worker_id={} fetched {} tasks from local queue",
+          name_, self_id, batch_count);
+    }
 
     // 2) 本地为空则尝试批量窃取
+
+    // 2.1) 优先窃取主线程队列（主线程投递任务时会进入该队列）
+    if (batch_count == 0 && self_id >= 0) {
+      if (WorkStealingQueue *main_q = get_next_queue(main_queue_id)) {
+        if (main_q->approx_size() > 0) {
+          Task stolen[kStealBatch];
+          const size_t n = main_q->steal_batch(stolen, kStealBatch);
+          if (n > 0) {
+            ZCOROUTINE_LOG_DEBUG(
+                "Scheduler[{}] worker_id={} stole {} tasks from main queue",
+                name_, self_id, n);
+            for (size_t i = 0; i < n && batch_count < kBatchSize; ++i) {
+              tasks[batch_count++] = std::move(stolen[i]);
+            }
+          }
+        }
+      }
+    }
+
+    // 2.2) 再随机从其他 worker 队列窃取
     if (batch_count == 0 && worker_count > 1 && self_id >= 0) {
-      std::uniform_int_distribution<int> dist(0, worker_count - 1);
-
-      int v1 = self_id;
-      int v2 = self_id;
-      // 随机选择两个受害者线程（不等于自己）
-      while (v1 == self_id) {
-        v1 = dist(rng);
-      }
-      while (v2 == self_id || v2 == v1) {
-        v2 = dist(rng);
-      }
-
-      ZCOROUTINE_LOG_DEBUG("Scheduler[{}] worker_id={} attempting to steal tasks from victims {} and {}",
-                           name_, self_id, v1, v2);
-
-      // 获取剩余任务较多的受害者队列进行窃取
-      WorkStealingQueue *q1 = get_next_queue(v1);
-      WorkStealingQueue *q2 = get_next_queue(v2);
-      if (q1 && q2) {
-        const size_t s1 = q1->approx_size();
-        const size_t s2 = q2->approx_size();
-        WorkStealingQueue *victim_q = (s1 >= s2) ? q1 : q2;
-
+      // 特殊处理：当 worker_count == 2 时，除自己外只有 1 个受害者，
+      // 选择两个不同受害者会陷入死循环。
+      if (worker_count == 2) {
+        const int victim = 1 - self_id;
+        WorkStealingQueue *victim_q = get_next_queue(victim);
         if (victim_q && victim_q->approx_size() > 0) {
           Task stolen[kStealBatch];
           const size_t n = victim_q->steal_batch(stolen, kStealBatch);
-          ZCOROUTINE_LOG_DEBUG("Scheduler[{}] worker_id={} stole {} tasks from victim queue",
-                               name_, self_id, n);
+          ZCOROUTINE_LOG_DEBUG(
+              "Scheduler[{}] worker_id={} stole {} tasks from victim {}",
+              name_, self_id, n, victim);
           for (size_t i = 0; i < n && batch_count < kBatchSize; ++i) {
             tasks[batch_count++] = std::move(stolen[i]);
+          }
+        }
+      } else {
+        std::uniform_int_distribution<int> dist(0, worker_count - 1);
+
+        int v1 = self_id;
+        int v2 = self_id;
+        // 随机选择两个受害者线程（不等于自己）
+        while (v1 == self_id) {
+          v1 = dist(rng);
+        }
+        while (v2 == self_id || v2 == v1) {
+          v2 = dist(rng);
+        }
+
+        ZCOROUTINE_LOG_DEBUG(
+            "Scheduler[{}] worker_id={} attempting to steal tasks from victims {} and {}",
+            name_, self_id, v1, v2);
+
+        // 获取剩余任务较多的受害者队列进行窃取
+        WorkStealingQueue *q1 = get_next_queue(v1);
+        WorkStealingQueue *q2 = get_next_queue(v2);
+        if (q1 && q2) {
+          const size_t s1 = q1->approx_size();
+          const size_t s2 = q2->approx_size();
+          WorkStealingQueue *victim_q = (s1 >= s2) ? q1 : q2;
+
+          if (victim_q && victim_q->approx_size() > 0) {
+            Task stolen[kStealBatch];
+            const size_t n = victim_q->steal_batch(stolen, kStealBatch);
+            ZCOROUTINE_LOG_DEBUG(
+                "Scheduler[{}] worker_id={} stole {} tasks from victim queue",
+                name_, self_id, n);
+            for (size_t i = 0; i < n && batch_count < kBatchSize; ++i) {
+              tasks[batch_count++] = std::move(stolen[i]);
+            }
           }
         }
       }
@@ -293,7 +351,6 @@ void Scheduler::schedule_loop() {
     // 3) 没有任务则在本地队列上等待
     if (batch_count == 0) {
       idle_thread_count_.fetch_add(1, std::memory_order_relaxed);
-
       // 再次尝试从本地队列等待取任务, 避免遗漏新入队任务
       batch_count = local_queue->wait_pop_batch(tasks, kBatchSize, 100);
       idle_thread_count_.fetch_sub(1, std::memory_order_relaxed);
