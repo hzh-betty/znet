@@ -4,6 +4,7 @@
 
 #include "runtime/context.h"
 #include "runtime/fiber.h"
+#include "runtime/fiber_pool.h"
 #include "runtime/shared_stack.h"
 #include "scheduling/work_stealing_queue.h"
 #include "util/zcoroutine_logger.h"
@@ -103,7 +104,11 @@ SharedStack *ThreadContext::get_shared_stack() {
   // 如果是共享栈模式但未设置共享栈，自动创建
   if (ctx->shared_stack_ctx_.stack_mode == StackMode::kShared &&
       !ctx->shared_stack_ctx_.shared_stack) {
-    ctx->shared_stack_ctx_.shared_stack = std::make_unique<SharedStack>();
+    auto &pool = FiberPool::get_instance();
+    const size_t stack_size =
+        pool.initialized() ? pool.shared_stack_size() : SharedStack::kDefaultStackSize;
+    ctx->shared_stack_ctx_.shared_stack =
+        std::make_unique<SharedStack>(SharedStack::kDefaultStackCount, stack_size);
   }
   return ctx->shared_stack_ctx_.shared_stack.get();
 }
@@ -193,6 +198,53 @@ Fiber::ptr ThreadContext::top_call_stack() {
 
 int ThreadContext::call_stack_size() {
   return get_current()->scheduler_ctx_.call_stack_size;
+}
+
+Fiber::ptr ThreadContext::fiber_pool_pop(bool shared) {
+  auto *ctx = get_current();
+  auto &vec = shared ? ctx->fiber_pool_ctx_.shared_free
+                     : ctx->fiber_pool_ctx_.independent_free;
+  if (vec.empty()) {
+    return nullptr;
+  }
+  Fiber::ptr fiber = std::move(vec.back());
+  vec.pop_back();
+  return fiber;
+}
+
+bool ThreadContext::fiber_pool_push(const Fiber::ptr &fiber,
+                                    size_t per_thread_max_capacity) {
+  if (!fiber) {
+    return false;
+  }
+
+  auto *ctx = get_current();
+  const bool shared = fiber->is_shared_stack();
+  auto &vec = shared ? ctx->fiber_pool_ctx_.shared_free
+                     : ctx->fiber_pool_ctx_.independent_free;
+
+  if (per_thread_max_capacity > 0) {
+    const size_t total = ctx->fiber_pool_ctx_.independent_free.size() +
+                         ctx->fiber_pool_ctx_.shared_free.size();
+    if (total >= per_thread_max_capacity) {
+      return false;
+    }
+  }
+
+  vec.push_back(fiber);
+  return true;
+}
+
+size_t ThreadContext::fiber_pool_size() {
+  auto *ctx = get_current();
+  return ctx->fiber_pool_ctx_.independent_free.size() +
+         ctx->fiber_pool_ctx_.shared_free.size();
+}
+
+void ThreadContext::fiber_pool_clear() {
+  auto *ctx = get_current();
+  ctx->fiber_pool_ctx_.independent_free.clear();
+  ctx->fiber_pool_ctx_.shared_free.clear();
 }
 
 } // namespace zcoroutine

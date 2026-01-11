@@ -4,6 +4,7 @@
 #include "runtime/fiber.h"
 #include <array>
 #include <memory>
+#include <vector>
 
 namespace zcoroutine {
 
@@ -55,6 +56,19 @@ struct SharedStackContext {
  */
 struct HookContext {
   bool hook_enable = false; // Hook启用标志
+};
+
+/**
+ * @brief 协程池（线程本地）上下文
+ * 分别维护独立栈与共享栈的空闲协程列表。
+ *
+ * 约束：
+ * - 只允许本线程访问（由 ThreadContext 的 thread_local 保证）
+ * - get/return 均为 O(1) push/pop
+ */
+struct FiberPoolContext {
+  std::vector<std::shared_ptr<Fiber>> independent_free;
+  std::vector<std::shared_ptr<Fiber>> shared_free;
 };
 
 /**
@@ -207,6 +221,17 @@ public:
   static Fiber::ptr top_call_stack();
   static int call_stack_size();
 
+  /**
+   * @brief 从协程池中弹出一个协程
+   * @param shared true表示弹出共享栈协程，false表示独立栈协程
+   * @return 协程指针，如果池为空则返回nullptr
+   */
+  static Fiber::ptr fiber_pool_pop(bool shared);
+  static bool fiber_pool_push(const Fiber::ptr &fiber,
+                              size_t per_thread_max_capacity);
+  static size_t fiber_pool_size();
+  static void fiber_pool_clear();
+
 private:
   // 调度器上下文
   SchedulerContext scheduler_ctx_;
@@ -216,6 +241,9 @@ private:
 
   // Hook上下文
   HookContext hook_ctx_;
+
+  // 协程池上下文
+  FiberPoolContext fiber_pool_ctx_;
 };
 
 } // namespace zcoroutine

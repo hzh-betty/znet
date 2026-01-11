@@ -482,11 +482,23 @@ void IoScheduler::io_thread_func() {
 
 void IoScheduler::wake_up() const {
   char dummy = 'W';
-  ssize_t n = write(wake_fd_[1], &dummy, 1);
-  if (n != 1) {
+  while (true) {
+    ssize_t n = write(wake_fd_[1], &dummy, 1);
+    if (n == 1) {
+      return;
+    }
+    if (n < 0 && errno == EINTR) {
+      continue;
+    }
+    // 管道已满时，意味着读端在 epoll 中已就绪或将很快就绪；此时无需报错，直接返回。
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      return;
+    }
+
     ZCOROUTINE_LOG_ERROR(
         "IoScheduler::wake_up write failed, errno={}, error={}", errno,
         strerror(errno));
+    return;
   }
 }
 

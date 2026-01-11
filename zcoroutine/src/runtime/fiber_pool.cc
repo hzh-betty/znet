@@ -1,6 +1,5 @@
 #include "runtime/fiber_pool.h"
 
-#include <algorithm>
 #include <mutex>
 
 #include "util/zcoroutine_logger.h"
@@ -8,76 +7,90 @@
 
 namespace zcoroutine {
 
-// 默认最大容量：1000个协程
-static constexpr size_t kDefaultMaxCapacity = 1000;
-
-FiberPool::FiberPool()
-    : max_capacity_(kDefaultMaxCapacity), total_created_(0), total_reused_(0) {
-  ZCOROUTINE_LOG_INFO("FiberPool initialized with max_capacity={}",
-                      max_capacity_);
-}
+FiberPool::FiberPool() { ZCOROUTINE_LOG_INFO("FiberPool initialized"); }
 
 FiberPool &FiberPool::get_instance() {
   static FiberPool instance;
   return instance;
 }
 
+void FiberPool::init(size_t independent_stack_size, size_t shared_stack_size,
+                     size_t per_thread_max_capacity) {
+  static std::mutex init_mutex;
+  std::lock_guard<std::mutex> lock(init_mutex);
+  if (initialized_.load(std::memory_order_acquire)) {
+    return;
+  }
+
+  if (independent_stack_size == 0 || shared_stack_size == 0) {
+    ZCOROUTINE_LOG_FATAL("FiberPool::init: stack_size must be > 0");
+    abort();
+  }
+
+  // 设置全局配置
+  independent_stack_size_.store(independent_stack_size, std::memory_order_release);
+  shared_stack_size_.store(shared_stack_size, std::memory_order_release);
+  per_thread_max_capacity_.store(per_thread_max_capacity,
+                                 std::memory_order_release);
+  initialized_.store(true, std::memory_order_release);
+
+  ZCOROUTINE_LOG_INFO(
+      "FiberPool::init: independent_stack_size={}, shared_stack_size={}, "
+      "per_thread_max_capacity={}",
+      independent_stack_size, shared_stack_size, per_thread_max_capacity);
+}
+
+bool FiberPool::initialized() const {
+  return initialized_.load(std::memory_order_acquire);
+}
+
+size_t FiberPool::independent_stack_size() const {
+  return independent_stack_size_.load(std::memory_order_acquire);
+}
+
+size_t FiberPool::shared_stack_size() const {
+  return shared_stack_size_.load(std::memory_order_acquire);
+}
+
+size_t FiberPool::per_thread_max_capacity() const {
+  return per_thread_max_capacity_.load(std::memory_order_acquire);
+}
+
 Fiber::ptr FiberPool::get_fiber(std::function<void()> func, size_t stack_size,
                                 const std::string &name,
                                 bool use_shared_stack) {
 
-  //shared stack 是线程局部的，全局池会导致跨线程复用协程，
-  if (use_shared_stack || ThreadContext::get_stack_mode() == StackMode::kShared) {
-    auto fiber = std::make_shared<Fiber>(std::move(func), stack_size, name,
-                                         use_shared_stack);
-    total_created_.fetch_add(1, std::memory_order_relaxed);
+  const bool wants_shared =
+      use_shared_stack || (ThreadContext::get_stack_mode() == StackMode::kShared);
+
+  // 未 init：直接创建（不池化）
+  if (!initialized()) {
+    ZCOROUTINE_LOG_WARN("FiberPool::get_fiber: not initialized, create directly");
+    return std::make_shared<Fiber>(std::move(func), stack_size, name, wants_shared);
+  }
+
+  const size_t supported_stack_size =
+      wants_shared ? shared_stack_size() : independent_stack_size();
+
+  //最多尝试复用一个
+  Fiber::ptr fiber = ThreadContext::fiber_pool_pop(wants_shared);
+  if (fiber) {
+    // 若请求更大，复用失败：放回并直接创建新的
+    if (fiber->stack_size() < stack_size) {
+      (void)ThreadContext::fiber_pool_push(fiber, per_thread_max_capacity());
+      return std::make_shared<Fiber>(std::move(func), stack_size, name,
+                                     wants_shared);
+    }
+    fiber->reset(std::move(func));
     return fiber;
   }
 
-  Fiber::ptr fiber = nullptr;
+  // 无可复用：若请求小于等于支持栈大小，创建支持栈大小；否则创建请求栈大小
+  const size_t create_stack_size =
+      (stack_size <= supported_stack_size) ? supported_stack_size : stack_size;
 
-  // 尝试从池中获取可复用的协程
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    // 查找栈大小匹配的协程
-    auto it = std::find_if(pool_.begin(), pool_.end(),
-                           [use_shared_stack](const Fiber::ptr &f) {
-                             // 检查栈模式是否匹配
-                             return (use_shared_stack && f->is_shared_stack()) ||
-                                    (!use_shared_stack && !f->is_shared_stack());
-                           });
-
-    if (it != pool_.end()) {
-      fiber = *it;
-      pool_.erase(it);
-      total_reused_.fetch_add(1, std::memory_order_relaxed);
-
-      ZCOROUTINE_LOG_DEBUG("FiberPool: reused fiber, fiber_id={}, "
-                           "pool_size={}, hit_rate={:.2f}%",
-                           fiber->id(), pool_.size(), hit_rate() * 100.0);
-    }
-  }
-
-  // 如果池中没有可用的协程，创建新的
-  if (!fiber) {
-    fiber = std::make_shared<Fiber>(std::move(func), stack_size, name,
-                                    use_shared_stack);
-    total_created_.fetch_add(1, std::memory_order_relaxed);
-
-    ZCOROUTINE_LOG_DEBUG("FiberPool: created new fiber, fiber_id={}, "
-                         "stack_size={}, total_created={}",
-                         fiber->id(), stack_size, total_created_.load());
-  } else {
-    // 从池中复用协程，重置为新任务
-    fiber->reset(std::move(func));
-
-    ZCOROUTINE_LOG_DEBUG("FiberPool: reused fiber after reset, fiber_id={}, "
-                         "pool_size={}",
-                         fiber->id(), pool_.size());
-  }
-
-  return fiber;
+  return std::make_shared<Fiber>(std::move(func), create_stack_size, name,
+                                 wants_shared);
 }
 
 bool FiberPool::return_fiber(const Fiber::ptr &fiber) {
@@ -86,9 +99,7 @@ bool FiberPool::return_fiber(const Fiber::ptr &fiber) {
     return false;
   }
 
-  // Shared stack 模式下不归还协程到池中
-  // shared stack 是线程局部的，全局池会导致跨线程复用协程，
-  if (fiber->is_shared_stack() || ThreadContext::get_stack_mode() == StackMode::kShared) {
+  if (!initialized()) {
     return false;
   }
 
@@ -100,70 +111,16 @@ bool FiberPool::return_fiber(const Fiber::ptr &fiber) {
     return false;
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
+  const bool shared = fiber->is_shared_stack();
+    const size_t supported_stack_size =
+      shared ? shared_stack_size() : independent_stack_size();
 
-  // 检查池是否已满
-  if (max_capacity_ > 0 && pool_.size() >= max_capacity_) {
-    ZCOROUTINE_LOG_DEBUG("FiberPool::return_fiber: pool full, discard "
-                         "fiber_id={}, pool_size={}, max_capacity={}",
-                         fiber->id(), pool_.size(), max_capacity_);
+  // 按规则：fiber 实际栈大小不足（< supported）直接拒绝
+  if (fiber->stack_size() < supported_stack_size) {
     return false;
   }
 
-  // 归还到池中
-  pool_.push_back(fiber);
-
-  ZCOROUTINE_LOG_DEBUG("FiberPool::return_fiber: fiber_id={}, pool_size={}",
-                       fiber->id(), pool_.size());
-  return true;
-}
-
-void FiberPool::set_max_capacity(size_t capacity) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  max_capacity_ = capacity;
-
-  // 如果当前池大小超过新容量，移除多余的协程
-  if (max_capacity_ > 0 && pool_.size() > max_capacity_) {
-    size_t to_remove = pool_.size() - max_capacity_;
-    pool_.erase(pool_.end() - to_remove, pool_.end());
-
-    ZCOROUTINE_LOG_INFO(
-        "FiberPool::set_max_capacity: capacity={}, removed {} fibers",
-        max_capacity_, to_remove);
-  }
-}
-
-size_t FiberPool::get_max_capacity() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return max_capacity_;
-}
-
-size_t FiberPool::size() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return pool_.size();
-}
-
-void FiberPool::clear() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  size_t old_size = pool_.size();
-  pool_.clear();
-
-  total_created_.store(0, std::memory_order_relaxed);
-  total_reused_.store(0, std::memory_order_relaxed);
-
-  ZCOROUTINE_LOG_INFO("FiberPool::clear: cleared {} fibers", old_size);
-}
-
-double FiberPool::hit_rate() const {
-  uint64_t created = total_created_.load(std::memory_order_relaxed);
-  uint64_t reused = total_reused_.load(std::memory_order_relaxed);
-
-  uint64_t total_get = created + reused;
-  if (total_get == 0) {
-    return 0.0;
-  }
-
-  return static_cast<double>(reused) / static_cast<double>(total_get);
+  return ThreadContext::fiber_pool_push(fiber, per_thread_max_capacity());
 }
 
 } // namespace zcoroutine

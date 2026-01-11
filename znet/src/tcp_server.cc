@@ -1,6 +1,6 @@
 #include "tcp_server.h"
 #include "io/io_scheduler.h"
-#include "io/status_table.h"
+#include "util/thread_context.h"
 #include "runtime/fiber_pool.h"
 #include "znet_logger.h"
 #include <errno.h>
@@ -16,7 +16,9 @@ TcpServer::TcpServer(zcoroutine::IoScheduler::ptr io_worker,
                                    : std::make_shared<zcoroutine::IoScheduler>(
                                          1, "TcpServer-Accept", false)),
       recv_timeout_(60 * 1000 * 2), // 默认 2 分钟
-      name_("znet/1.0.0"), type_("tcp"), is_stop_(true) {}
+      name_("znet/1.0.0"), type_("tcp"), is_stop_(true) {
+        zcoroutine::FiberPool::get_instance().init();
+      }
 
 TcpServer::~TcpServer() { stop(); }
 
@@ -29,6 +31,12 @@ bool TcpServer::bind(Address::ptr addr) {
 
 bool TcpServer::bind(const std::vector<Address::ptr> &addrs,
                      std::vector<Address::ptr> &fails) {
+  // 在该作用域开启hook，用于将监听socket设置为非阻塞
+  struct HookEnabler {
+    HookEnabler() { zcoroutine::ThreadContext::set_hook_enable(true); }
+    ~HookEnabler() { zcoroutine::ThreadContext::set_hook_enable(false); }
+  };
+  HookEnabler hook_enabler;
   zcoroutine::RWMutex::WriteLock lock(socks_mutex_);
   for (auto &addr : addrs) {
     Socket::ptr sock = Socket::create_tcp(addr);
@@ -52,11 +60,6 @@ bool TcpServer::bind(const std::vector<Address::ptr> &addrs,
       fails.push_back(addr);
       continue;
     }
-
-    // 关键：将监听 fd 注册到 zcoroutine 的 StatusTable。
-    // 否则如果 socket 在 hook 未开启的线程里创建，accept hook 将拿不到上下文，
-    // 进而退化为阻塞 accept，导致 stop() 时 join 卡死。
-    zcoroutine::StatusTable::GetInstance()->get(sock->fd(), true);
 
     socks_.push_back(sock);
   }

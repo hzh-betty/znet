@@ -101,4 +101,10 @@ void WorkStealingQueue::stop() {
   cv_.notify_all();
 }
 
+void WorkStealingQueue::notify_one() {
+  if (waiters_.load(std::memory_order_acquire) > 0) {
+    cv_.notify_one();
+  }
+}
+
 } // namespace zcoroutine

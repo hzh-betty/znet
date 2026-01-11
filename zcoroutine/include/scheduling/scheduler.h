@@ -126,6 +126,11 @@ private:
   void enqueue(Task &&task);
 
   /**
+   * @brief 唤醒空闲 worker（用于外部线程投递到 main_queue_ 的场景）
+   */
+  void tickle();
+
+  /**
    * @brief 内部方法：获取指定worker的工作队列指针
    * @param worker_id worker线程ID
    * @return 工作队列指针，若无则返回nullptr

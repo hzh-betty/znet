@@ -146,6 +146,12 @@ public:
   }
 
   /**
+   * @brief 获取协程实际使用的栈大小
+   * @return 栈大小（字节）
+   */
+  size_t stack_size() const { return stack_size_; }
+
+  /**
    * @brief 获取栈上下文（共享栈相关）
    * @return 栈上下文指针
    */

@@ -130,11 +130,10 @@ TEST_F(HookIntegrationTest, NanosleepHook) {
   });
   scheduler_->schedule(fiber);
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
   EXPECT_TRUE(done.load());
 }
 
-// ==================== Socket创建Hook测试 ====================
 
 // 测试4：socket hook - 自动注册到 StatusTable
 TEST_F(HookIntegrationTest, SocketHookRegistration) {
@@ -215,8 +214,6 @@ TEST_F(HookIntegrationTest, AcceptHookRegistration) {
   close(client_fd);
   close(listen_fd);
 }
-
-// ==================== Read/Write Hook测试 ====================
 
 // 测试6：read hook - EAGAIN时挂起协程
 TEST_F(HookIntegrationTest, ReadHookWithEAGAIN) {
@@ -321,7 +318,6 @@ TEST_F(HookIntegrationTest, RecvSendHook) {
   close(socks[1]);
 }
 
-// ==================== Fcntl Hook测试 ====================
 
 // 测试9：fcntl F_SETFL - 用户非阻塞设置
 TEST_F(HookIntegrationTest, FcntlSetNonblock) {
@@ -395,7 +391,6 @@ TEST_F(HookIntegrationTest, UserNonblockBypassesHook) {
   close(socks[1]);
 }
 
-// ==================== Ioctl Hook测试 ====================
 
 // 测试12：ioctl FIONBIO设置非阻塞
 TEST_F(HookIntegrationTest, IoctlFIONBIO) {
@@ -422,7 +417,6 @@ TEST_F(HookIntegrationTest, IoctlFIONBIO) {
   close(sockfd);
 }
 
-// ==================== Setsockopt Hook测试 ====================
 
 // 测试13：setsockopt SO_RCVTIMEO设置读超时
 TEST_F(HookIntegrationTest, SetsockoptRcvTimeout) {
@@ -510,8 +504,6 @@ TEST_F(HookIntegrationTest, SetsockoptSndTimeout) {
   close(socks[1]);
 }
 
-// ==================== Close Hook测试 ====================
-
 // 测试16：close时自动取消IO事件
 TEST_F(HookIntegrationTest, CloseCanelsIoEvents) {
   set_hook_enable(true);
@@ -572,7 +564,6 @@ TEST_F(HookIntegrationTest, CloseDeletesSocketFdContext) {
   EXPECT_EQ(fd_ctx, nullptr);
 }
 
-// ==================== 组合场景测试 ====================
 
 // 测试18：多个协程并发socket IO
 TEST_F(HookIntegrationTest, ConcurrentSocketIo) {

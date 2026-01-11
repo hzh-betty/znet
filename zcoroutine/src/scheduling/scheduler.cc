@@ -56,6 +56,24 @@ void Scheduler::enqueue(Task &&task) {
 
   q->push(std::move(task));
   pending_tasks_.fetch_add(1, std::memory_order_relaxed);
+
+  // 外部线程/IO 线程通常会投递到 main_queue_。
+  // worker 线程可能正阻塞在各自的本地队列上，若不主动唤醒，会造成最多一个 wait 超时(100ms) 的额外延迟。
+  if (q == main_queue_.get()) {
+    tickle();
+  }
+}
+
+void Scheduler::tickle() {
+  if (idle_thread_count_.load(std::memory_order_relaxed) <= 0) {
+    return;
+  }
+
+  for (int i = 0; i < thread_count_; ++i) {
+    if (auto *q = get_next_queue(i)) {
+      q->notify_one();
+    }
+  }
 }
 
 void Scheduler::register_work_queue(int worker_id, WorkStealingQueue *queue) {
@@ -402,9 +420,8 @@ void Scheduler::schedule_loop() {
           bool returned = FiberPool::get_instance().return_fiber(fiber);
           if (returned) {
             ZCOROUTINE_LOG_DEBUG("Scheduler[{}] fiber returned to pool: "
-                                 "name={}, id={}, pool_size={}",
-                                 name_, fiber->name(), fiber->id(),
-                                 FiberPool::get_instance().size());
+                                 "name={}, id={}",
+                                 name_, fiber->name(), fiber->id());
           } else {
             ZCOROUTINE_LOG_DEBUG("Scheduler[{}] fiber not returned to pool "
                                  "(pool full or invalid): name={}, id={}",

@@ -3,8 +3,6 @@
 
 #include <atomic>
 #include <functional>
-#include <mutex>
-#include <vector>
 
 #include "runtime/fiber.h"
 #include "util/noncopyable.h"
@@ -24,6 +22,24 @@ public:
    * @return 协程池单例引用
    */
   static FiberPool &get_instance();
+
+  /**
+   * @brief 初始化协程池全局配置（全局一次）
+   * @param independent_stack_size 所有线程支持的独立栈大小
+   * @param shared_stack_size 所有线程支持的共享栈大小
+   * @param per_thread_max_capacity 每线程最大缓存协程数（0 表示不限制）
+   *
+   * @note 必须在使用池之前调用；重复调用将被忽略
+   */
+  void init(size_t independent_stack_size = StackAllocator::kDefaultStackSize,
+            size_t shared_stack_size = SharedStack::kDefaultStackSize,
+            size_t per_thread_max_capacity = 1000);
+
+  bool initialized() const;
+
+  size_t independent_stack_size() const;
+  size_t shared_stack_size() const;
+  size_t per_thread_max_capacity() const;
 
   /**
    * @brief 从池中获取或创建一个协程
@@ -48,67 +64,15 @@ public:
    */
   bool return_fiber(const Fiber::ptr &fiber);
 
-  /**
-   * @brief 设置池的最大容量
-   * @param capacity 最大容量，0表示不限制
-   */
-  void set_max_capacity(size_t capacity);
-
-  /**
-   * @brief 获取池的最大容量
-   * @return 最大容量，0表示不限制
-   */
-  size_t get_max_capacity() const;
-
-  /**
-   * @brief 获取当前池中可用协程数量
-   * @return 可用协程数量
-   */
-  size_t size() const;
-
-  /**
-   * @brief 清空池中所有协程
-   */
-  void clear();
-
-  /**
-   * @brief 获取累计创建的协程总数（包括从池中获取和新创建的）
-   * @return 累计创建总数
-   */
-  uint64_t total_created() const {
-    return total_created_.load(std::memory_order_relaxed);
-  }
-
-  /**
-   * @brief 获取累计复用的协程次数
-   * @return 累计复用次数
-   */
-  uint64_t total_reused() const {
-    return total_reused_.load(std::memory_order_relaxed);
-  }
-
-  /**
-   * @brief 获取命中率（复用次数 / 总获取次数）
-   * @return 命中率，范围[0.0, 1.0]
-   */
-  double hit_rate() const;
-
 private:
   FiberPool();
   ~FiberPool() = default;
 
-  // 使用互斥锁保护池（临界区包含 O(n) 操作，互斥锁更合适）
-  mutable std::mutex mutex_;
-
-  // 协程池（使用vector存储空闲协程）
-  std::vector<Fiber::ptr> pool_;
-
-  // 最大容量，0表示不限制
-  size_t max_capacity_;
-
-  // 统计信息
-  std::atomic<uint64_t> total_created_; // 累计创建的协程总数
-  std::atomic<uint64_t> total_reused_;  // 累计复用的协程次数
+  // 全局配置（由 FiberPool 单例持有，所有线程共享）
+  std::atomic<bool> initialized_{false};
+  std::atomic<size_t> independent_stack_size_{StackAllocator::kDefaultStackSize};
+  std::atomic<size_t> shared_stack_size_{SharedStack::kDefaultStackSize};
+  std::atomic<size_t> per_thread_max_capacity_{1000};
 };
 
 } // namespace zcoroutine

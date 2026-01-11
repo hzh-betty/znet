@@ -57,6 +57,11 @@ public:
   void stop();
 
   /**
+   * @brief 唤醒一个在 wait_pop_batch 上等待的线程（若有等待者）
+   */
+  void notify_one();
+
+  /**
    * @brief 近似获取队列大小（非严格准确）
    * @return 队列中任务数量
    */
