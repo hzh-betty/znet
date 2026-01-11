@@ -56,7 +56,7 @@ public:
    * @param peer_addr 对端地址
    * @param io_scheduler IO调度器
    */
-  TcpConnection(const std::string &name, Socket::ptr socket,
+  TcpConnection(std::string name, Socket::ptr socket,
                 const Address::ptr &local_addr, const Address::ptr &peer_addr,
                 zcoroutine::IoScheduler *io_scheduler = nullptr);
 

@@ -82,7 +82,8 @@ foreach(bench_source ${BENCHMARK_SRCS})
             zlog_shared
             pthread
     )
-    
+    # 使用 -O2 优化级别和调试符号（用于perf）
+    target_compile_options(${bench_target_name} PRIVATE -O2 -g)
     message(STATUS "Configured benchmark: ${bench_target_name}")
 endforeach()
 

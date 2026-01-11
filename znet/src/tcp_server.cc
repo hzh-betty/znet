@@ -85,24 +85,29 @@ void TcpServer::start_accept(Socket::ptr sock) {
       // 创建TcpConnection，转移 Socket 所有权
       auto local_addr = client->get_local_address();
       auto peer_addr = client->get_remote_address();
-      std::string conn_name = name_ + "-" + peer_addr->to_string();
+        std::string conn_name;
+        conn_name.reserve(name_.size() + 1 + 64);
+        conn_name.append(name_);
+        conn_name.push_back('-');
+        conn_name.append(peer_addr->to_string());
 
       TcpConnectionPtr conn = std::make_shared<TcpConnection>(
-          conn_name, std::move(client), local_addr, peer_addr,
+          std::move(conn_name), std::move(client), local_addr, peer_addr,
           io_worker_.get());
 
       // 这样可以确保协程使用正确的线程本地 SharedStack，避免跨线程共享栈问题
       if (io_worker_) {
         auto self = shared_from_this();
-        io_worker_->schedule([self, conn]() {
+        io_worker_->schedule([self, conn = std::move(conn)]() mutable {
           // 在 worker 线程中创建协程，使用 worker 线程的 SharedStack
           auto fiber =
-              zcoroutine::FiberPool::get_instance().get_fiber([self, conn]() {
+              zcoroutine::FiberPool::get_instance().get_fiber([self, conn = std::move(conn)]() mutable {
                 // 处理连接
                 self->handle_client(conn);
                 conn->connect_established();
               });
           fiber->resume();
+          (void)zcoroutine::FiberPool::get_instance().return_fiber(fiber);
         });
       } else {
         handle_client(conn);

@@ -23,11 +23,11 @@ const char* TcpConnection::state_to_string(State s) {
   }
 }
 
-TcpConnection::TcpConnection(const std::string &name, Socket::ptr socket,
+TcpConnection::TcpConnection(std::string name, Socket::ptr socket,
                              const Address::ptr &local_addr,
                              const Address::ptr &peer_addr,
                              zcoroutine::IoScheduler *io_scheduler)
-    : name_(name), state_(State::Connecting),
+    : name_(std::move(name)), state_(State::Connecting),
       socket_(std::move(socket)), local_addr_(local_addr),
       peer_addr_(peer_addr), io_scheduler_(io_scheduler) {
 
@@ -66,7 +66,7 @@ void TcpConnection::connect_established() {
     if (zcoroutine::Scheduler::get_this() == io_scheduler_) {
       cb(self);
     } else if (io_scheduler_) {
-      io_scheduler_->schedule([self, cb]() { cb(self); });
+      io_scheduler_->schedule([self, cb = std::move(cb)]() mutable { cb(self); });
     } else {
       cb(self);
     }
@@ -209,7 +209,7 @@ void TcpConnection::handle_write() {
         if (zcoroutine::Scheduler::get_this() == io_scheduler_) {
           cb(self);
         } else {
-          io_scheduler_->schedule([self, cb]() { cb(self); });
+          io_scheduler_->schedule([self, cb = std::move(cb)]() mutable { cb(self); });
         }
       }
 
