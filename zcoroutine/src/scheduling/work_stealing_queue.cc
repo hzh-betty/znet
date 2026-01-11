@@ -1,16 +1,79 @@
 #include "scheduling/work_stealing_queue.h"
 
 #include <chrono>
+#include <mutex>
 #include <utility>
 
+#include "util/zcoroutine_logger.h"
+
 namespace zcoroutine {
+
+void WorkStealingQueue::bind_bitmap(StealableQueueBitmap *bitmap, int worker_id,
+                                   size_t high_watermark,
+                                   size_t low_watermark) {
+  bitmap_ = bitmap;
+  bitmap_worker_id_ = worker_id;
+  high_watermark_ = high_watermark;
+  low_watermark_ = low_watermark;
+
+  if (!bitmap_ || bitmap_worker_id_ < 0) {
+    ZCOROUTINE_LOG_DEBUG("WorkStealingQueue::bind_bitmap disabled (bitmap={}, worker_id={})",
+                        static_cast<const void *>(bitmap_), bitmap_worker_id_);
+    return;
+  }
+  if (high_watermark_ == 0 || low_watermark_ == 0 ||
+      low_watermark_ >= high_watermark_) {
+    ZCOROUTINE_LOG_WARN(
+        "WorkStealingQueue::bind_bitmap invalid watermarks: worker_id={}, H={}, L={} (bitmap disabled)",
+        bitmap_worker_id_, high_watermark_, low_watermark_);
+    return;
+  }
+
+  const size_t cur = approx_size();
+  const bool publish = (bitmap_ && bitmap_worker_id_ >= 0 &&
+                        cur > high_watermark_ && high_watermark_ > 0);
+  bitmap_published_.store(publish, std::memory_order_relaxed);
+  if (publish) {
+    bitmap_->set(static_cast<size_t>(bitmap_worker_id_));
+    ZCOROUTINE_LOG_DEBUG(
+        "WorkStealingQueue bitmap publish: worker_id={}, size={}, H={}, L={}",
+        bitmap_worker_id_, cur, high_watermark_, low_watermark_);
+  }
+}
+
+void WorkStealingQueue::maybe_update_bitmap(size_t new_size) {
+  if (!bitmap_ || bitmap_worker_id_ < 0) {
+    return;
+  }
+  // 未配置阈值则不启用位图上报。
+  if (high_watermark_ == 0 || low_watermark_ == 0 ||
+      low_watermark_ >= high_watermark_) {
+    return;
+  }
+
+  const bool published = bitmap_published_.load(std::memory_order_relaxed);
+  if (!published && new_size > high_watermark_) {
+    bitmap_->set(static_cast<size_t>(bitmap_worker_id_));
+    bitmap_published_.store(true, std::memory_order_relaxed);
+    ZCOROUTINE_LOG_DEBUG(
+        "WorkStealingQueue bitmap publish: worker_id={}, size={}, H={}, L={}",
+        bitmap_worker_id_, new_size, high_watermark_, low_watermark_);
+  } else if (published && new_size < low_watermark_) {
+    bitmap_->clear(static_cast<size_t>(bitmap_worker_id_));
+    bitmap_published_.store(false, std::memory_order_relaxed);
+    ZCOROUTINE_LOG_DEBUG(
+        "WorkStealingQueue bitmap unpublish: worker_id={}, size={}, H={}, L={}",
+        bitmap_worker_id_, new_size, high_watermark_, low_watermark_);
+  }
+}
 
 void WorkStealingQueue::push(Task &&task) {
   {
     std::lock_guard<Spinlock> lock(lock_);
     tasks_.push_back(std::move(task));
   }
-  size_.fetch_add(1, std::memory_order_relaxed);
+  const size_t old = size_.fetch_add(1, std::memory_order_relaxed);
+  maybe_update_bitmap(old + 1);
 
   // 如果有等待者则唤醒，减少无效的notify调用
   if (waiters_.load(std::memory_order_acquire) > 0) {
@@ -30,7 +93,8 @@ size_t WorkStealingQueue::pop_batch(Task *out, size_t max_count) {
     tasks_.pop_back();
   }
   if (n > 0) {
-    size_.fetch_sub(n, std::memory_order_relaxed);
+    const size_t old = size_.fetch_sub(n, std::memory_order_relaxed);
+    maybe_update_bitmap(old - n);
   }
   return n;
 }
@@ -47,9 +111,36 @@ size_t WorkStealingQueue::steal_batch(Task *out, size_t max_count) {
     tasks_.pop_front();
   }
   if (n > 0) {
-    size_.fetch_sub(n, std::memory_order_relaxed);
+    const size_t old = size_.fetch_sub(n, std::memory_order_relaxed);
+    maybe_update_bitmap(old - n);
   }
   return n;
+}
+
+size_t WorkStealingQueue::swap_if_empty(WorkStealingQueue &victim) {
+  if (&victim == this) {
+    return 0;
+  }
+
+  // Spinlock 支持 try_lock 后可使用 std::lock 实现无死锁双锁。
+  std::unique_lock<Spinlock> l1(lock_, std::defer_lock);
+  std::unique_lock<Spinlock> l2(victim.lock_, std::defer_lock);
+  std::lock(l1, l2);
+
+  if (!tasks_.empty() || victim.tasks_.empty()) {
+    return 0;
+  }
+
+  tasks_.swap(victim.tasks_);
+
+  const size_t new_self = tasks_.size();
+  const size_t new_victim = victim.tasks_.size();
+  size_.store(new_self, std::memory_order_relaxed);
+  victim.size_.store(new_victim, std::memory_order_relaxed);
+
+  maybe_update_bitmap(new_self);
+  victim.maybe_update_bitmap(new_victim);
+  return new_self;
 }
 
 size_t WorkStealingQueue::wait_pop_batch(Task *out, size_t max_count,
@@ -88,7 +179,8 @@ size_t WorkStealingQueue::wait_pop_batch(Task *out, size_t max_count,
       tasks_.pop_back();
     }
     if (n > 0) {
-      size_.fetch_sub(n, std::memory_order_relaxed);
+      const size_t old = size_.fetch_sub(n, std::memory_order_relaxed);
+      maybe_update_bitmap(old - n);
     }
     return n;
   }

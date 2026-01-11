@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "runtime/fiber.h"
+#include "scheduling/stealable_queue_bitmap.h"
 #include "scheduling/task_queue.h" // for Task
 #include "util/thread_context.h"
 
@@ -175,6 +176,9 @@ protected:
 
   std::vector<std::atomic<WorkStealingQueue *>>
       work_queues_; // 队列指针注册表：0..thread_count_-1 为 worker，thread_count_ 为主线程
+
+  // 可窃取队列提示位图：用于引导非随机的任务窃取选择。
+  StealableQueueBitmap stealable_bitmap_;
 
   // 每个 Scheduler 独立拥有的主线程队列（用于外部线程投递任务），
   // 避免多个 Scheduler 在同一线程启动时共享 ThreadContext::work_queue 导致串队列。

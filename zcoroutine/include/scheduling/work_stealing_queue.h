@@ -7,6 +7,7 @@
 #include <deque>
 
 #include "scheduling/task_queue.h"
+#include "scheduling/stealable_queue_bitmap.h"
 #include "sync/spinlock.h"
 #include "util/noncopyable.h"
 
@@ -23,6 +24,13 @@ class WorkStealingQueue : public NonCopyable {
 public:
   WorkStealingQueue() = default;
   ~WorkStealingQueue() = default;
+
+  /**
+   * @brief 绑定可窃取队列提示位图，用于在队列规模跨越阈值时上报“可窃取”状态。
+   * @note 仅 worker 本地队列需要绑定；main_queue_ 可不绑定。
+   */
+  void bind_bitmap(StealableQueueBitmap *bitmap, int worker_id,
+                   size_t high_watermark, size_t low_watermark);
 
   void push(Task &&task);
 
@@ -41,6 +49,12 @@ public:
    * @return 实际取出的任务数量
    */
   size_t steal_batch(Task *out, size_t max_count);
+
+  /**
+   * @brief 若本队列为空，则与 victim 交换底层 deque（O(1)）。
+   * @return 交换后本队列获得的任务数；若未发生交换返回 0。
+   */
+  size_t swap_if_empty(WorkStealingQueue &victim);
 
   /**
    * @brief 等待直到队列非空或停止，然后 owner 批量 pop。
@@ -74,6 +88,8 @@ public:
   bool empty() const { return approx_size() == 0; }
 
 private:
+  void maybe_update_bitmap(size_t new_size);
+
   mutable Spinlock lock_;
   std::condition_variable_any cv_;
   std::deque<Task> tasks_;
@@ -81,6 +97,12 @@ private:
   std::atomic<size_t> size_{0};
   std::atomic<int> waiters_{0};
   std::atomic<bool> stopped_{false};
+
+  StealableQueueBitmap *bitmap_{nullptr};
+  int bitmap_worker_id_{-1};
+  size_t high_watermark_{0};
+  size_t low_watermark_{0};
+  std::atomic<bool> bitmap_published_{false};
 };
 
 } // namespace zcoroutine
