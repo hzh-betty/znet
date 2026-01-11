@@ -324,7 +324,6 @@ void IoScheduler::trigger_event(int fd, FdContext::Event event) {
   // 线程安全地取出并清空上下文，同时清除事件位
   auto popped = fd_ctx->pop_event(event);
   if (!popped.had_event) {
-    // 关闭/取消竞态下，epoll 可能仍上报旧事件；无需告警。
     ZCOROUTINE_LOG_DEBUG(
         "IoScheduler::trigger_event event not registered (likely race), fd={}, event={}",
         fd, FdContext::event_to_string(event));

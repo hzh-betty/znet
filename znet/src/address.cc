@@ -2,7 +2,7 @@
 #include "znet_logger.h"
 #include <cstring>
 #include <netdb.h>
-#include <sstream>
+#include <cstdio>
 
 namespace znet {
 
@@ -75,9 +75,14 @@ IPv4Address::IPv4Address(const sockaddr_in &addr) : addr_(addr) {}
 std::string IPv4Address::to_string() const {
   char buf[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &addr_.sin_addr, buf, sizeof(buf));
-  std::ostringstream oss;
-  oss << buf << ":" << ntohs(addr_.sin_port);
-  return oss.str();
+
+  char out[INET_ADDRSTRLEN + 8];
+  const int n = snprintf(out, sizeof(out), "%s:%u", buf,
+                         static_cast<unsigned>(ntohs(addr_.sin_port)));
+  if (n <= 0) {
+    return std::string();
+  }
+  return std::string(out, static_cast<size_t>(n));
 }
 
 uint16_t IPv4Address::port() const { return ntohs(addr_.sin_port); }
@@ -101,9 +106,14 @@ IPv6Address::IPv6Address(const sockaddr_in6 &addr) : addr_(addr) {}
 std::string IPv6Address::to_string() const {
   char buf[INET6_ADDRSTRLEN];
   inet_ntop(AF_INET6, &addr_.sin6_addr, buf, sizeof(buf));
-  std::ostringstream oss;
-  oss << "[" << buf << "]:" << ntohs(addr_.sin6_port);
-  return oss.str();
+
+  char out[INET6_ADDRSTRLEN + 10];
+  const int n = snprintf(out, sizeof(out), "[%s]:%u", buf,
+                         static_cast<unsigned>(ntohs(addr_.sin6_port)));
+  if (n <= 0) {
+    return std::string();
+  }
+  return std::string(out, static_cast<size_t>(n));
 }
 
 uint16_t IPv6Address::port() const { return ntohs(addr_.sin6_port); }

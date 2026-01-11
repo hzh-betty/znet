@@ -92,8 +92,6 @@ public:
    */
   bool disconnected() const { return state_.load(std::memory_order_acquire) == State::Disconnected; }
 
-  // ========== 回调设置 ==========
-
   void set_connection_callback(ConnectionCallback cb) {
     connection_callback_ = std::move(cb);
   }
@@ -107,8 +105,6 @@ public:
   }
 
   void set_close_callback(CloseCallback cb) { close_callback_ = std::move(cb); }
-
-  // ========== 连接管理 ==========
 
   /**
    * @brief 连接建立时调用（由 TcpServer 调用）
@@ -151,8 +147,6 @@ public:
    * @brief 设置 SO_KEEPALIVE
    */
   void set_keep_alive(bool on);
-
-  // ========== IO 事件处理 ==========
 
   /**
    * @brief 可读事件处理

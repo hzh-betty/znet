@@ -28,7 +28,8 @@ Fiber::ptr FiberPool::get_fiber(std::function<void()> func, size_t stack_size,
 
   //shared stack 是线程局部的，全局池会导致跨线程复用协程，
   if (use_shared_stack || ThreadContext::get_stack_mode() == StackMode::kShared) {
-    auto fiber = std::make_shared<Fiber>(func, stack_size, name, use_shared_stack);
+    auto fiber = std::make_shared<Fiber>(std::move(func), stack_size, name,
+                                         use_shared_stack);
     total_created_.fetch_add(1, std::memory_order_relaxed);
     return fiber;
   }
@@ -60,7 +61,8 @@ Fiber::ptr FiberPool::get_fiber(std::function<void()> func, size_t stack_size,
 
   // 如果池中没有可用的协程，创建新的
   if (!fiber) {
-    fiber = std::make_shared<Fiber>(func, stack_size, name, use_shared_stack);
+    fiber = std::make_shared<Fiber>(std::move(func), stack_size, name,
+                                    use_shared_stack);
     total_created_.fetch_add(1, std::memory_order_relaxed);
 
     ZCOROUTINE_LOG_DEBUG("FiberPool: created new fiber, fiber_id={}, "
@@ -68,7 +70,7 @@ Fiber::ptr FiberPool::get_fiber(std::function<void()> func, size_t stack_size,
                          fiber->id(), stack_size, total_created_.load());
   } else {
     // 从池中复用协程，重置为新任务
-    fiber->reset(func);
+    fiber->reset(std::move(func));
 
     ZCOROUTINE_LOG_DEBUG("FiberPool: reused fiber after reset, fiber_id={}, "
                          "pool_size={}",

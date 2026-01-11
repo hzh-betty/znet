@@ -59,8 +59,6 @@ public:
    */
   bool is_valid() const { return sockfd_ != -1; }
 
-  // ========== 创建 Socket 静态工厂方法 ==========
-
   /**
    * @brief 创建 TCP Socket (IPv4)
    */
@@ -80,8 +78,6 @@ public:
    * @brief 创建 UDP Socket (IPv6)
    */
   static Socket::ptr create_udp_v6();
-
-  // ========== 连接管理 ==========
 
   /**
    * @brief 绑定地址
@@ -127,7 +123,6 @@ public:
    */
   bool shutdown_write();
 
-  // ========== 数据传输 ==========
 
   /**
    * @brief 发送数据
@@ -158,8 +153,6 @@ public:
    */
   ssize_t recv_from(void *buffer, size_t length, Address::ptr from,
                     int flags = 0);
-
-  // ========== Socket 选项配置 ==========
 
   /**
    * @brief 设置 socket 选项
@@ -214,7 +207,6 @@ public:
    */
   bool set_non_blocking(bool on);
 
-  // ========== 地址查询 ==========
 
   /**
    * @brief 获取本地地址
@@ -230,8 +222,6 @@ public:
    * @brief 获取 socket 错误
    */
   int get_error();
-
-  // ========== IoScheduler 集成 ==========
 
   /**
    * @brief 取消读事件

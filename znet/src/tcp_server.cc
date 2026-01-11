@@ -152,11 +152,6 @@ bool TcpServer::start() {
       auto fiber = zcoroutine::FiberPool::get_instance().get_fiber(
           [self, sock]() { self->start_accept(sock); });
       accept_worker_->schedule(std::move(fiber));
-    } else if (io_worker_) {
-      auto self = shared_from_this();
-      auto fiber = zcoroutine::FiberPool::get_instance().get_fiber(
-          [self, sock]() { self->start_accept(sock); });
-      io_worker_->schedule(std::move(fiber));
     } else {
       ZNET_LOG_ERROR("TcpServer::start no scheduler available");
       return false;

@@ -6,7 +6,7 @@ set -e
 PORT=9000
 THREADS=4
 DURATION=30
-BUILD_DIR=${BUILD_DIR:-build}
+BUILD_DIR=${BUILD_DIR:-build_release}
 MODE=${MODE:-"normal"}  # normal/shared/both
 
 run_perf_test() {

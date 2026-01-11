@@ -1,5 +1,6 @@
 #include "tcp_connection.h"
 #include "io/io_scheduler.h"
+#include "scheduling/scheduler.h"
 #include "znet_logger.h"
 #include <errno.h>
 #include <string.h>
@@ -53,20 +54,22 @@ void TcpConnection::connect_established() {
 
   // 注册读事件到IoScheduler
   if (io_scheduler_) {
-    io_scheduler_->add_event(
-        socket_->fd(), zcoroutine::FdContext::kRead,
-        std::bind(&TcpConnection::handle_read, shared_from_this()));
+    auto self = shared_from_this();
+    io_scheduler_->add_event(socket_->fd(), zcoroutine::FdContext::kRead,
+                             [self]() { self->handle_read(); });
   }
 
   // 触发连接建立回调（异步调度）
   if (connection_callback_) {
-    std::weak_ptr<TcpConnection> weak_self = shared_from_this();
+    auto self = shared_from_this();
     auto cb = connection_callback_;
-    io_scheduler_->schedule([weak_self, cb]() {
-      if (auto self = weak_self.lock()) {
-        cb(self);
-      }
-    });
+    if (zcoroutine::Scheduler::get_this() != nullptr) {
+      cb(self);
+    } else if (io_scheduler_) {
+      io_scheduler_->schedule([self, cb]() { cb(self); });
+    } else {
+      cb(self);
+    }
   }
 
   ZNET_LOG_INFO("TcpConnection::connect_established [{}] fd={}", name_,
@@ -155,26 +158,18 @@ void TcpConnection::handle_read() {
     return;
   }
 
-  if (total > 0) {
-    // 数据到达，触发消息回调（异步调度）
-    if (message_callback_ && io_scheduler_) {
-      std::weak_ptr<TcpConnection> weak_self = shared_from_this();
-      auto cb = message_callback_;
-      auto buf = std::make_shared<Buffer>();
-      buf->swap(input_buffer_);
-      io_scheduler_->schedule([weak_self, cb, buf]() {
-        if (auto self = weak_self.lock()) {
-          cb(self, buf.get());
-        }
-      });
-    }
+  if (total > 0 && message_callback_) {
+    // 直接在当前事件回调里执行，避免额外调度/锁竞争/动态分配。
+    // 同时让 input_buffer_ 在回调间持续累积，避免分片请求丢数据。
+    auto self = shared_from_this();
+    message_callback_(self, &input_buffer_);
   }
 
   // 重新注册读事件，保证后续数据可继续驱动回调
   if (io_scheduler_ && connected()) {
+    auto self = shared_from_this();
     io_scheduler_->add_event(socket_->fd(), zcoroutine::FdContext::kRead,
-                             std::bind(&TcpConnection::handle_read,
-                                       shared_from_this()));
+                             [self]() { self->handle_read(); });
   }
 }
 
@@ -210,13 +205,13 @@ void TcpConnection::handle_write() {
 
       // 触发写完成回调（异步调度）
       if (wrote_any && write_complete_callback_ && io_scheduler_) {
-        std::weak_ptr<TcpConnection> weak_self = shared_from_this();
+        auto self = shared_from_this();
         auto cb = write_complete_callback_;
-        io_scheduler_->schedule([weak_self, cb]() {
-          if (auto self = weak_self.lock()) {
-            cb(self);
-          }
-        });
+        if (zcoroutine::Scheduler::get_this() != nullptr) {
+          cb(self);
+        } else {
+          io_scheduler_->schedule([self, cb]() { cb(self); });
+        }
       }
 
       if (state_.load(std::memory_order_acquire) == State::Disconnecting) {
@@ -247,9 +242,9 @@ void TcpConnection::handle_write() {
 
   // 仍有数据未发送完，重新注册写事件等待下次可写
   if (io_scheduler_ && connected()) {
+    auto self = shared_from_this();
     io_scheduler_->add_event(socket_->fd(), zcoroutine::FdContext::kWrite,
-                             std::bind(&TcpConnection::handle_write,
-                                       shared_from_this()));
+                             [self]() { self->handle_write(); });
   }
 }
 
@@ -270,13 +265,13 @@ void TcpConnection::handle_close() {
 
   // 触发关闭回调（异步调度）
   if (close_callback_ && io_scheduler_) {
-    std::weak_ptr<TcpConnection> weak_self = shared_from_this();
+    auto self = shared_from_this();
     auto cb = close_callback_;
-    io_scheduler_->schedule([weak_self, cb]() {
-      if (auto self = weak_self.lock()) {
-        cb(self);
-      }
-    });
+    if (zcoroutine::Scheduler::get_this() != nullptr) {
+      cb(self);
+    } else {
+      io_scheduler_->schedule([self, cb]() { cb(self); });
+    }
   }
 }
 
@@ -301,14 +296,14 @@ void TcpConnection::send_in_loop(const void *data, size_t len) {
     if (n_wrote >= 0) {
       remaining = len - n_wrote;
       if (remaining == 0 && write_complete_callback_ && io_scheduler_) {
-        // 数据全部发送完成（异步调度）
-        std::weak_ptr<TcpConnection> weak_self = shared_from_this();
+        // 数据全部发送完成：若已在调度线程则直接调用，避免额外调度开销
+        auto self = shared_from_this();
         auto cb = write_complete_callback_;
-        io_scheduler_->schedule([weak_self, cb]() {
-          if (auto self = weak_self.lock()) {
-            cb(self);
-          }
-        });
+        if (zcoroutine::Scheduler::get_this() != nullptr) {
+          cb(self);
+        } else {
+          io_scheduler_->schedule([self, cb]() { cb(self); });
+        }
       }
     } else {
       n_wrote = 0;
@@ -328,9 +323,9 @@ void TcpConnection::send_in_loop(const void *data, size_t len) {
 
     // 注册写事件
     if (io_scheduler_) {
-      io_scheduler_->add_event(
-          socket_->fd(), zcoroutine::FdContext::kWrite,
-          std::bind(&TcpConnection::handle_write, shared_from_this()));
+      auto self = shared_from_this();
+      io_scheduler_->add_event(socket_->fd(), zcoroutine::FdContext::kWrite,
+                               [self]() { self->handle_write(); });
     }
 
     ZNET_LOG_DEBUG("TcpConnection::send_in_loop [{}] buffered {} bytes, total "
