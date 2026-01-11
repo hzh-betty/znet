@@ -99,6 +99,7 @@ int FdContext::cancel_event(Event event) {
   int new_events = 0;
   std::function<void()> callback = nullptr;
   Fiber::ptr fiber = nullptr;
+  Scheduler *owner_scheduler = nullptr;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     int current_events = events_.load(std::memory_order_relaxed);
@@ -116,6 +117,7 @@ int FdContext::cancel_event(Event event) {
     // 先取出callback和fiber，避免在回调中重新注册事件时被后续重置
     callback = std::move(ctx.callback);
     fiber = std::move(ctx.fiber);
+    owner_scheduler = ctx.scheduler;
 
     // 删除事件标志并重置事件上下文
     int old_events = current_events;
@@ -129,7 +131,10 @@ int FdContext::cancel_event(Event event) {
                          fd_, event_to_string(event), old_events, new_events);
   }
   
-  auto *scheduler = Scheduler::get_this();
+  // 只能投递到“事件归属”的 scheduler。
+  // 不要 fallback 到 Scheduler::get_this()：当前线程 TLS 可能为空或属于另一个 Scheduler，
+  // 否则会把回调/协程错误投递到别的线程池，导致错线程执行/卡死/竞态。
+  auto *scheduler = owner_scheduler;
   if (callback) {
     ZCOROUTINE_LOG_DEBUG(
         "FdContext::cancel_event executing callback: fd={}, event={}", fd_,
@@ -137,7 +142,6 @@ int FdContext::cancel_event(Event event) {
     if (scheduler) {
       scheduler->schedule(std::move(callback));
     } else {
-      // 非调度线程（例如单测）场景下没有 TLS Scheduler，直接同步执行回调。
       callback();
     }
   } else if (fiber) {
@@ -148,7 +152,7 @@ int FdContext::cancel_event(Event event) {
       scheduler->schedule(std::move(fiber));
     } else {
       ZCOROUTINE_LOG_WARN(
-          "FdContext::cancel_event no scheduler available: fd={}, event={}",
+          "FdContext::cancel_event no owner scheduler: fd={}, event={} (fiber left ready)",
           fd_, event_to_string(event));
     }
   } else {
@@ -166,6 +170,8 @@ void FdContext::cancel_all() {
   Fiber::ptr read_fiber = nullptr;
   std::function<void()> write_callback = nullptr;
   Fiber::ptr write_fiber = nullptr;
+  Scheduler *read_owner_scheduler = nullptr;
+  Scheduler *write_owner_scheduler = nullptr;
   {
     int write_triggered = 0;
     int read_triggered = 0;
@@ -186,6 +192,7 @@ void FdContext::cancel_all() {
       EventContext &ctx = read_ctx_;
       read_callback = std::move(ctx.callback);
       read_fiber = std::move(ctx.fiber);
+      read_owner_scheduler = ctx.scheduler;
       reset_event_context(ctx);
       if (read_callback || read_fiber) {
         read_triggered = 1;
@@ -197,6 +204,7 @@ void FdContext::cancel_all() {
       EventContext &ctx = write_ctx_;
       write_callback = std::move(ctx.callback);
       write_fiber = std::move(ctx.fiber);
+      write_owner_scheduler = ctx.scheduler;
       reset_event_context(ctx);
       if (write_callback || write_fiber) {
         write_triggered = 1;
@@ -210,11 +218,10 @@ void FdContext::cancel_all() {
                          fd_, old_events, read_triggered, write_triggered);
   }
 
-  auto *scheduler = Scheduler::get_this();
-
   if (read_callback) {
     ZCOROUTINE_LOG_DEBUG("FdContext::cancel_all executing READ callback: fd={}",
                          fd_);
+    Scheduler *scheduler = read_owner_scheduler;
     if (scheduler) {
       scheduler->schedule(std::move(read_callback));
     } else {
@@ -224,17 +231,20 @@ void FdContext::cancel_all() {
     ZCOROUTINE_LOG_DEBUG(
         "FdContext::cancel_all scheduling READ fiber: fd={}, fiber_id={}", fd_,
         read_fiber->id());
+    Scheduler *scheduler = read_owner_scheduler;
     if (scheduler) {
       scheduler->schedule(std::move(read_fiber));
     } else {
       ZCOROUTINE_LOG_WARN(
-          "FdContext::cancel_all no scheduler for READ fiber: fd={}", fd_);
+          "FdContext::cancel_all no owner scheduler for READ fiber: fd={} (fiber left ready)",
+          fd_);
     }
   }
 
   if (write_callback) {
     ZCOROUTINE_LOG_DEBUG(
         "FdContext::cancel_all executing WRITE callback: fd={}", fd_);
+    Scheduler *scheduler = write_owner_scheduler;
     if (scheduler) {
       scheduler->schedule(std::move(write_callback));
     } else {
@@ -244,11 +254,13 @@ void FdContext::cancel_all() {
     ZCOROUTINE_LOG_DEBUG(
         "FdContext::cancel_all scheduling WRITE fiber: fd={}, fiber_id={}", fd_,
         write_fiber->id());
+    Scheduler *scheduler = write_owner_scheduler;
     if (scheduler) {
       scheduler->schedule(std::move(write_fiber));
     } else {
       ZCOROUTINE_LOG_WARN(
-          "FdContext::cancel_all no scheduler for WRITE fiber: fd={}", fd_);
+          "FdContext::cancel_all no owner scheduler for WRITE fiber: fd={} (fiber left ready)",
+          fd_);
     }
   }
 }
@@ -256,6 +268,7 @@ void FdContext::cancel_all() {
 void FdContext::trigger_event(Event event) {
   std::function<void()> callback = nullptr;
   Fiber::ptr fiber = nullptr;
+  Scheduler *owner_scheduler = nullptr;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     int current_events = events_.load(std::memory_order_relaxed);
@@ -273,6 +286,10 @@ void FdContext::trigger_event(Event event) {
     // 先取出callback和fiber，避免回调中重新注册时被后续del_event清空
     callback = std::move(ctx.callback);
     fiber = std::move(ctx.fiber);
+    owner_scheduler = ctx.scheduler;
+
+    // 清空事件上下文，避免残留 callback/fiber/scheduler
+    reset_event_context(ctx);
 
     // 删除事件标志
     int old_events = current_events;
@@ -285,7 +302,8 @@ void FdContext::trigger_event(Event event) {
                current_events);
   }
 
-  auto *scheduler = Scheduler::get_this();
+  // 同 cancel_event：只投递到事件归属 scheduler，避免错线程投递。
+  auto *scheduler = owner_scheduler;
   // 触发回调或调度协程
   if (callback) {
     ZCOROUTINE_LOG_DEBUG(
@@ -304,7 +322,7 @@ void FdContext::trigger_event(Event event) {
       scheduler->schedule(std::move(fiber));
     } else {
       ZCOROUTINE_LOG_WARN(
-          "FdContext::trigger_event no scheduler available: fd={}, event={}",
+          "FdContext::trigger_event no owner scheduler: fd={}, event={} (fiber left ready)",
           fd_, event_to_string(event));
     }
   } else {
@@ -331,6 +349,8 @@ FdContext::EventContext &FdContext::get_event_context(Event event) {
 void FdContext::reset_event_context(EventContext &ctx) {
   bool had_fiber = ctx.fiber != nullptr;
   bool had_callback = ctx.callback != nullptr;
+
+  ctx.scheduler = nullptr;
 
   ctx.fiber.reset();
   ctx.callback = nullptr;

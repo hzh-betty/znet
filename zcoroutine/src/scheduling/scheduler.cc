@@ -19,13 +19,6 @@ Scheduler::Scheduler(int thread_count, std::string name, bool use_shared_stack)
   work_queues_(static_cast<size_t>(thread_count_ + 1)),
     main_queue_(std::make_unique<WorkStealingQueue>()),
     use_shared_stack_(use_shared_stack) {
-
-
-  // 创建主协程（保存线程的原始上下文）
-  static Fiber::ptr main_fiber(new Fiber());
-  ThreadContext::set_main_fiber(main_fiber);
-  ThreadContext::set_current_fiber(main_fiber);
-
   // 共享栈将在每个worker线程的run()中独立创建
   ZCOROUTINE_LOG_INFO(
       "Scheduler[{}] created with thread_count={}, shared_stack={}", name_,
@@ -183,6 +176,12 @@ void Scheduler::set_this(Scheduler *scheduler) {
 
 void Scheduler::run() {
   ZCOROUTINE_LOG_DEBUG("Scheduler[{}] worker thread entering run loop", name_);
+
+  // 为当前 worker 线程创建并设置 main_fiber（保存线程原始上下文）。
+  // 注意：主线程不参与调度，不应在 Scheduler 构造函数中污染创建线程的 TLS。
+  Fiber::ptr main_fiber(new Fiber());
+  ThreadContext::set_main_fiber(main_fiber);
+  ThreadContext::set_current_fiber(main_fiber);
 
   // 开启hook，让worker线程可以使用协程版的系统调用
   set_hook_enable(true);

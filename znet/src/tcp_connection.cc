@@ -63,7 +63,7 @@ void TcpConnection::connect_established() {
   if (connection_callback_) {
     auto self = shared_from_this();
     auto cb = connection_callback_;
-    if (zcoroutine::Scheduler::get_this() != nullptr) {
+    if (zcoroutine::Scheduler::get_this() == io_scheduler_) {
       cb(self);
     } else if (io_scheduler_) {
       io_scheduler_->schedule([self, cb]() { cb(self); });
@@ -160,7 +160,6 @@ void TcpConnection::handle_read() {
 
   if (total > 0 && message_callback_) {
     // 直接在当前事件回调里执行，避免额外调度/锁竞争/动态分配。
-    // 同时让 input_buffer_ 在回调间持续累积，避免分片请求丢数据。
     auto self = shared_from_this();
     message_callback_(self, &input_buffer_);
   }
@@ -207,7 +206,7 @@ void TcpConnection::handle_write() {
       if (wrote_any && write_complete_callback_ && io_scheduler_) {
         auto self = shared_from_this();
         auto cb = write_complete_callback_;
-        if (zcoroutine::Scheduler::get_this() != nullptr) {
+        if (zcoroutine::Scheduler::get_this() == io_scheduler_) {
           cb(self);
         } else {
           io_scheduler_->schedule([self, cb]() { cb(self); });
@@ -267,7 +266,7 @@ void TcpConnection::handle_close() {
   if (close_callback_ && io_scheduler_) {
     auto self = shared_from_this();
     auto cb = close_callback_;
-    if (zcoroutine::Scheduler::get_this() != nullptr) {
+    if (zcoroutine::Scheduler::get_this() == io_scheduler_) {
       cb(self);
     } else {
       io_scheduler_->schedule([self, cb]() { cb(self); });
@@ -299,7 +298,7 @@ void TcpConnection::send_in_loop(const void *data, size_t len) {
         // 数据全部发送完成：若已在调度线程则直接调用，避免额外调度开销
         auto self = shared_from_this();
         auto cb = write_complete_callback_;
-        if (zcoroutine::Scheduler::get_this() != nullptr) {
+        if (zcoroutine::Scheduler::get_this() == io_scheduler_) {
           cb(self);
         } else {
           io_scheduler_->schedule([self, cb]() { cb(self); });

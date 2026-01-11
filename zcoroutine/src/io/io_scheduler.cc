@@ -127,6 +127,8 @@ int IoScheduler::add_event(int fd, FdContext::Event event,
     auto current_fiber = Fiber::get_this();
     event_ctx.fiber = current_fiber;
   }
+  // 记录该事件归属的调度器：即使在非调度线程触发 cancel/close，也能投递回正确的 Scheduler。
+  event_ctx.scheduler = this;
 
   // 添加事件到FdContext
   // 注意：FdContext::add_event 在事件已存在时会直接返回当前 events_。
