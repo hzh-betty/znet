@@ -17,8 +17,8 @@ void init_logger(const zlog::LogLevel::value level) {
   builder->buildLoggerSink<zlog::StdOutSink>();
   builder->build();
 }
-zlog::Logger::ptr get_logger() {
+zlog::Logger *get_logger() {
   static zlog::Logger::ptr logger = zlog::getLogger("znet_logger");
-  return logger;
+  return logger.get();
 }
 } // namespace znet

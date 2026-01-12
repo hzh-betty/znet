@@ -18,7 +18,7 @@ Fiber::Fiber()
   // 主协程直接获取当前上下文
   context_->get_context();
 
-  ZCOROUTINE_LOG_INFO("Main fiber created: name={}, id={}", name_, id_);
+  ZCOROUTINE_LOG_DEBUG("Main fiber created: name={}, id={}", name_, id_);
 }
 
 // 确定切换目标：
@@ -158,8 +158,8 @@ Fiber::Fiber(std::function<void()> func, size_t stack_size,
   // 创建上下文
   context_->make_context(stack_ptr_, stack_size_, Fiber::main_func);
 
-  ZCOROUTINE_LOG_INFO("Fiber created: name={}, id={}, is_shared_stack={}",
-                      name_, id_, shared_ctx_->is_shared_stack());
+  ZCOROUTINE_LOG_DEBUG("Fiber created: name={}, id={}, is_shared_stack={}",
+                       name_, id_, shared_ctx_->is_shared_stack());
 }
 
 // 使用指定共享栈的构造函数
@@ -204,8 +204,8 @@ Fiber::Fiber(std::function<void()> func, SharedStack *shared_stack,
   // 创建上下文
   context_->make_context(stack_ptr_, stack_size_, Fiber::main_func);
 
-  ZCOROUTINE_LOG_INFO("Fiber created: name={}, id={}, is_shared_stack=true",
-                      name_, id_);
+  ZCOROUTINE_LOG_DEBUG(
+      "Fiber created: name={}, id={}, is_shared_stack=true", name_, id_);
 }
 
 Fiber::Fiber(Fiber &&other) noexcept

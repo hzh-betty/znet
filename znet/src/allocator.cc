@@ -20,18 +20,13 @@ void *Allocator::allocate(size_t size) {
                    size);
     return nullptr;
   }
-
-  ZNET_LOG_DEBUG("Allocator::allocate success: ptr={}, size={}", ptr, size);
   return ptr;
 }
 
 void Allocator::deallocate(void *ptr, size_t size) {
   if (!ptr) {
-    ZNET_LOG_WARN("Allocator::deallocate received null pointer");
     return;
   }
-
-  ZNET_LOG_DEBUG("Allocator::deallocate: ptr={}, size={}", ptr, size);
   free(ptr);
 }
 

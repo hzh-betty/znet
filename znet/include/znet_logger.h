@@ -11,7 +11,7 @@ namespace znet {
  * @note 该函数会同时初始化 znet 和 zcoroutine 两个日志系统
  */
 void init_logger(zlog::LogLevel::value level = zlog::LogLevel::value::DEBUG);
-zlog::Logger::ptr get_logger();
+zlog::Logger *get_logger();
 } // namespace znet
 
 // 便利的日志宏定义

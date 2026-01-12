@@ -37,8 +37,9 @@ TcpConnection::TcpConnection(std::string name, Socket::ptr socket,
 }
 
 TcpConnection::~TcpConnection() {
-  ZNET_LOG_INFO("TcpConnection::~TcpConnection [{}] fd={} state={}", name_,
-                socket_->fd(), state_to_string(state_.load(std::memory_order_acquire)));
+  ZNET_LOG_DEBUG("TcpConnection::~TcpConnection [{}] fd={} state={}", name_,
+                 socket_->fd(),
+                 state_to_string(state_.load(std::memory_order_acquire)));
   
   // 防御性清理：如果连接还没有关闭，移除 epoll 事件
   if (io_scheduler_ && !disconnected()) {

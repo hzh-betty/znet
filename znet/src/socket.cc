@@ -179,8 +179,6 @@ bool Socket::close() {
                    errno, strerror(errno));
     return false;
   }
-
-  ZNET_LOG_DEBUG("Socket::close success: fd={}", sockfd_);
   sockfd_ = -1;
   return true;
 }
