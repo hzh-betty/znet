@@ -9,8 +9,10 @@
 #include "util/zcoroutine_logger.h"
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <fcntl.h>
 #include <gtest/gtest.h>
+#include <mutex>
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
@@ -76,7 +78,11 @@ TEST_F(IoSchedulerIntegrationTest, PipeIoEvent) {
   fcntl(pipe_fds[0], F_SETFL, O_NONBLOCK);
   fcntl(pipe_fds[1], F_SETFL, O_NONBLOCK);
 
-  std::atomic<bool> read_done{false};
+  std::mutex m;
+  std::condition_variable cv;
+  bool read_done = false;
+  bool write_done = false;
+  bool write_ok = false;
   std::string received_data;
 
   // 添加读事件
@@ -85,21 +91,36 @@ TEST_F(IoSchedulerIntegrationTest, PipeIoEvent) {
     ssize_t n = read(pipe_fds[0], buffer, sizeof(buffer) - 1);
     if (n > 0) {
       buffer[n] = '\0';
-      received_data = buffer;
-      read_done = true;
+      {
+        std::lock_guard<std::mutex> lk(m);
+        received_data = buffer;
+        read_done = true;
+      }
+      cv.notify_one();
     }
   });
 
   // 延迟写入数据
   io_scheduler->add_timer(100, [&]() {
     const char *msg = "Hello IoScheduler!";
-    ASSERT_EQ(write(pipe_fds[1], msg, strlen(msg)), strlen(msg));
+    // 不在异线程/回调中使用 ASSERT/EXPECT，避免 gtest 线程模型导致的非确定行为。
+    const ssize_t n = write(pipe_fds[1], msg, strlen(msg));
+    {
+      std::lock_guard<std::mutex> lk(m);
+      write_done = true;
+      write_ok = (n == static_cast<ssize_t>(strlen(msg)));
+    }
+    cv.notify_one();
   });
 
-  // 等待读取完成
-  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  // 等待写入与读取完成（避免系统抖动导致固定 sleep 时间不足）
+  std::unique_lock<std::mutex> lk(m);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  cv.wait_until(lk, deadline, [&]() { return write_done && read_done; });
 
-  EXPECT_TRUE(read_done.load());
+  EXPECT_TRUE(write_done);
+  EXPECT_TRUE(write_ok);
+  EXPECT_TRUE(read_done);
   EXPECT_EQ(received_data, "Hello IoScheduler!");
 
   close(pipe_fds[0]);
@@ -192,8 +213,16 @@ TEST_F(IoSchedulerIntegrationTest, HookSystemCall) {
     sleep_done = true;
   });
 
-  // 等待充足时间
-  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  // 等待任务完成（避免 CI/系统抖动导致固定 sleep 时间不足）
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (sleep_done.load(std::memory_order_acquire) &&
+        early_ran.load(std::memory_order_acquire)) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
 
   // 断言：sleep 的任务确实完成，且早期定时器在 sleep 完成之前或期间被触发
   EXPECT_TRUE(sleep_done.load());

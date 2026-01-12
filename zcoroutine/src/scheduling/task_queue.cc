@@ -99,7 +99,12 @@ bool TaskQueue::empty() const {
 }
 
 void TaskQueue::stop() {
-  stopped_.store(true, std::memory_order_relaxed);
+  {
+    // 必须在与 pop() 相同的锁保护下更新 stopped_，否则可能出现：
+    // consumer 在检查谓词后准备进入 wait 之前错过 notify，导致永久阻塞。
+    std::lock_guard<Spinlock> lock(spinlock_);
+    stopped_.store(true, std::memory_order_relaxed);
+  }
   cv_.notify_all();
 }
 

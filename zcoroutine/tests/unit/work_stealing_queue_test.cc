@@ -4,6 +4,7 @@
  */
 
 #include "scheduling/work_stealing_queue.h"
+#include "scheduling/stealable_queue_bitmap.h"
 #include "util/zcoroutine_logger.h"
 
 #include <atomic>
@@ -121,6 +122,40 @@ TEST_F(WorkStealingQueueTest, ApproxSizeTracksPushPopSteal) {
   EXPECT_TRUE(q.empty());
 }
 
+TEST_F(WorkStealingQueueTest, PopAndStealWithZeroMaxCountReturnZero) {
+  WorkStealingQueue q;
+
+  q.push(Task([]() {}));
+  EXPECT_EQ(q.approx_size(), 1u);
+
+  Task out[1];
+  EXPECT_EQ(q.pop_batch(out, 0), 0u);
+  EXPECT_EQ(q.steal_batch(out, 0), 0u);
+  EXPECT_EQ(q.approx_size(), 1u);
+}
+
+TEST_F(WorkStealingQueueTest, WaitPopBatchFastPathWhenNotEmpty) {
+  WorkStealingQueue q;
+  std::atomic<int> value{0};
+
+  q.push(Task([&]() { value.store(1, std::memory_order_relaxed); }));
+  q.push(Task([&]() { value.store(2, std::memory_order_relaxed); }));
+
+  Task out[1];
+  auto start = std::chrono::steady_clock::now();
+  const size_t n = q.wait_pop_batch(out, 1, 1000);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  ASSERT_EQ(n, 1u);
+  ASSERT_TRUE(out[0].is_valid());
+  out[0].callback();
+
+  // wait_pop_batch 在队列非空时应直接走 pop_batch，且 owner 语义为 LIFO。
+  EXPECT_EQ(value.load(std::memory_order_relaxed), 2);
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+            200);
+}
+
 TEST_F(WorkStealingQueueTest, WaitPopBatchTimeoutReturnsZero) {
   WorkStealingQueue q;
   Task out[1];
@@ -188,6 +223,143 @@ TEST_F(WorkStealingQueueTest, StopDoesNotDiscardExistingTasks) {
   out[0].callback();
 
   EXPECT_EQ(value.load(std::memory_order_relaxed), 1);
+}
+
+TEST_F(WorkStealingQueueTest, NotifyOneDoesNotCauseEmptyQueueToReturn) {
+  WorkStealingQueue q;
+  std::atomic<int> state{0};
+
+  std::thread waiter([&]() {
+    state.store(1, std::memory_order_release);
+    Task out[1];
+    const size_t n = q.wait_pop_batch(out, 1, 0);
+    if (n == 0) {
+      state.store(-1, std::memory_order_release);
+      return;
+    }
+    if (out[0].callback) {
+      out[0].callback();
+    }
+  });
+
+  while (state.load(std::memory_order_acquire) == 0) {
+    std::this_thread::yield();
+  }
+
+  // 空队列下 notify_one 只会唤醒重检谓词，不应导致 wait_pop_batch 直接返回。
+  q.notify_one();
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  EXPECT_EQ(state.load(std::memory_order_acquire), 1);
+
+  q.push(Task([&]() { state.store(2, std::memory_order_release); }));
+  waiter.join();
+
+  EXPECT_EQ(state.load(std::memory_order_acquire), 2);
+}
+
+TEST_F(WorkStealingQueueTest, SwapIfEmptyStealsDequeInO1) {
+  WorkStealingQueue self;
+  WorkStealingQueue victim;
+
+  std::vector<int> executed;
+  std::mutex executed_mutex;
+
+  for (int i = 0; i < 5; ++i) {
+    victim.push(make_id_task(i, &executed, &executed_mutex));
+  }
+  ASSERT_TRUE(self.empty());
+  ASSERT_EQ(victim.approx_size(), 5u);
+
+  const size_t moved = self.swap_if_empty(victim);
+  EXPECT_EQ(moved, 5u);
+  EXPECT_EQ(self.approx_size(), 5u);
+  EXPECT_TRUE(victim.empty());
+
+  Task out[5];
+  const size_t n = self.pop_batch(out, 5);
+  ASSERT_EQ(n, 5u);
+  for (size_t i = 0; i < n; ++i) {
+    out[i].callback();
+    out[i].reset();
+  }
+
+  // self 作为 owner，pop_back：LIFO
+  ASSERT_EQ(executed.size(), 5u);
+  for (int i = 0; i < 5; ++i) {
+    EXPECT_EQ(executed[static_cast<size_t>(i)], 4 - i);
+  }
+
+  EXPECT_TRUE(self.empty());
+  EXPECT_EQ(self.swap_if_empty(victim), 0u);
+}
+
+TEST_F(WorkStealingQueueTest, SwapIfEmptyNoOpOnSelfOrNonEmptyOrEmptyVictim) {
+  WorkStealingQueue a;
+  WorkStealingQueue b;
+
+  a.push(Task([]() {}));
+  b.push(Task([]() {}));
+
+  EXPECT_EQ(a.swap_if_empty(a), 0u);
+  EXPECT_EQ(a.swap_if_empty(b), 0u); // a 非空
+
+  Task out[1];
+  EXPECT_EQ(a.pop_batch(out, 1), 1u);
+  EXPECT_TRUE(a.empty());
+
+  // b 非空，a 为空，此时可以交换
+  EXPECT_EQ(a.swap_if_empty(b), 1u);
+  EXPECT_EQ(a.approx_size(), 1u);
+  EXPECT_TRUE(b.empty());
+
+  // victim 为空，无交换
+  WorkStealingQueue c;
+  EXPECT_TRUE(c.empty());
+  EXPECT_EQ(b.swap_if_empty(c), 0u);
+}
+
+TEST_F(WorkStealingQueueTest, BitmapPublishAndUnpublishByWatermarks) {
+  StealableQueueBitmap bitmap(2);
+  WorkStealingQueue q;
+
+  // H=4, L=2: size>4 发布；size<2 撤销
+  q.bind_bitmap(&bitmap, 0, 4, 2);
+
+  for (int i = 0; i < 5; ++i) {
+    q.push(Task([]() {}));
+  }
+  EXPECT_EQ(q.approx_size(), 5u);
+  EXPECT_EQ(bitmap.find_victim(1), 0);
+
+  Task out[4];
+  EXPECT_EQ(q.pop_batch(out, 4), 4u); // size 从 5 -> 1，触发撤销（1 < 2）
+  EXPECT_EQ(q.approx_size(), 1u);
+  EXPECT_EQ(bitmap.find_victim(1), -1);
+}
+
+TEST_F(WorkStealingQueueTest, BitmapBindAfterQueueAlreadyLargePublishesImmediately) {
+  StealableQueueBitmap bitmap(2);
+  WorkStealingQueue q;
+
+  for (int i = 0; i < 6; ++i) {
+    q.push(Task([]() {}));
+  }
+  ASSERT_EQ(q.approx_size(), 6u);
+
+  q.bind_bitmap(&bitmap, 0, 4, 2);
+  EXPECT_EQ(bitmap.find_victim(1), 0);
+}
+
+TEST_F(WorkStealingQueueTest, BitmapDisabledOnInvalidParamsDoesNotPublish) {
+  StealableQueueBitmap bitmap(2);
+  WorkStealingQueue q;
+
+  // low >= high：按实现应禁用
+  q.bind_bitmap(&bitmap, 0, 2, 2);
+  for (int i = 0; i < 10; ++i) {
+    q.push(Task([]() {}));
+  }
+  EXPECT_EQ(bitmap.find_victim(1), -1);
 }
 
 TEST_F(WorkStealingQueueTest, ConcurrentOwnerAndThiefConsumeAllExactlyOnce) {
