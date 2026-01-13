@@ -6,9 +6,11 @@
 #include "util/zcoroutine_logger.h"
 #include <cerrno>
 #include <cstdarg>
+#include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <sys/time.h>
 
 namespace zcoroutine {
 
@@ -71,6 +73,40 @@ struct HookIniter {
 static HookIniter s_hook_initer;
 
 } // namespace zcoroutine
+
+// 当 hook 代码运行在 scheduler_fiber 上时，绝不能 yield。
+// 因为 scheduler_fiber::yield 会切回 main_fiber，导致 worker 的 run() 直接退出。
+static inline bool in_scheduler_fiber() {
+  auto cur = zcoroutine::ThreadContext::get_current_fiber();
+  auto sched = zcoroutine::ThreadContext::get_scheduler_fiber();
+  return (cur && sched && cur == sched);
+}
+
+static inline int do_fcntl(int fd, int cmd, int arg) {
+  if (fcntl_f) {
+    return fcntl_f(fd, cmd, arg);
+  }
+  return ::fcntl(fd, cmd, arg);
+}
+
+template <typename Fn>
+static auto with_temp_blocking_fd(int fd, Fn &&fn) -> decltype(fn()) {
+  int flags = do_fcntl(fd, F_GETFL, 0);
+  if (flags < 0) {
+    return fn();
+  }
+  const bool was_nonblock = (flags & O_NONBLOCK) != 0;
+  if (was_nonblock) {
+    (void)do_fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+  }
+
+  auto ret = fn();
+
+  if (was_nonblock) {
+    (void)do_fcntl(fd, F_SETFL, flags);
+  }
+  return ret;
+}
 
 // 定义原始函数指针
 sleep_func sleep_f = nullptr;
@@ -156,6 +192,21 @@ static ssize_t do_io_hook(int fd, OriginFun fun, const char *hook_fun_name,
     return fun(fd, std::forward<Args>(args)...);
   }
 
+  // scheduler_fiber 上禁止 yield：退化为“临时改回阻塞”直接调用原始 syscall。
+  // 说明：这会阻塞调度线程，但能保证 callback 直接执行时不因 yield 导致 worker 退出。
+  if (in_scheduler_fiber()) {
+    (void)hook_fun_name;
+    (void)event;
+    (void)timeout_so;
+    return with_temp_blocking_fd(fd, [&]() {
+      ssize_t ret = fun(fd, std::forward<Args>(args)...);
+      while (ret == -1 && errno == EINTR) {
+        ret = fun(fd, std::forward<Args>(args)...);
+      }
+      return ret;
+    });
+  }
+
   // 获取超时时间
   uint64_t timeout = fd_ctx->get_timeout(timeout_so);
   std::shared_ptr<timer_info> tinfo = std::make_shared<timer_info>();
@@ -232,12 +283,16 @@ static ssize_t do_io_hook(int fd, OriginFun fun, const char *hook_fun_name,
 
 extern "C" {
 
-// ==================== Sleep系列 ====================
 // Sleep系列函数的Hook实现原理：
 // 添加一个定时器，然后让出协程。当定时器超时后，调度器会重新调度该协程。
 
 unsigned int sleep(unsigned int seconds) {
   if (!zcoroutine::is_hook_enabled()) {
+    return sleep_f(seconds);
+  }
+
+  // scheduler_fiber 上禁止 yield：直接走原始 sleep
+  if (in_scheduler_fiber()) {
     return sleep_f(seconds);
   }
 
@@ -265,6 +320,11 @@ int usleep(useconds_t usec) {
     return usleep_f(usec);
   }
 
+  // scheduler_fiber 上禁止 yield：直接走原始 usleep
+  if (in_scheduler_fiber()) {
+    return usleep_f(usec);
+  }
+
   zcoroutine::IoScheduler *iom = zcoroutine::IoScheduler::get_this();
   if (!iom) {
     return usleep_f(usec);
@@ -284,6 +344,11 @@ int usleep(useconds_t usec) {
 
 int nanosleep(const struct timespec *req, struct timespec *rem) {
   if (!zcoroutine::is_hook_enabled()) {
+    return nanosleep_f(req, rem);
+  }
+
+  // scheduler_fiber 上禁止 yield：直接走原始 nanosleep
+  if (in_scheduler_fiber()) {
     return nanosleep_f(req, rem);
   }
 
@@ -378,6 +443,45 @@ int connect_with_timeout(int fd, const struct sockaddr *addr, socklen_t addrlen,
     return connect_f(fd, addr, addrlen);
   }
 
+  // scheduler_fiber 上禁止 yield：退化为阻塞 connect。
+  // 尽力支持超时：通过 SO_SNDTIMEO 影响阻塞 connect 的等待时间（不同内核/协议栈可能不完全等价）。
+  if (in_scheduler_fiber()) {
+    timeval old_tv{};
+    socklen_t old_len = sizeof(old_tv);
+    bool has_old = false;
+    if (getsockopt_f && getsockopt_f(fd, SOL_SOCKET, SO_SNDTIMEO, &old_tv,
+                                    &old_len) == 0) {
+      has_old = true;
+    }
+
+    if (timeout_ms != static_cast<uint64_t>(-1)) {
+      timeval tv{};
+      tv.tv_sec = static_cast<time_t>(timeout_ms / 1000);
+      tv.tv_usec = static_cast<suseconds_t>((timeout_ms % 1000) * 1000);
+      if (setsockopt_f) {
+        (void)setsockopt_f(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+      } else {
+        (void)::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+      }
+    }
+
+    int ret = with_temp_blocking_fd(fd, [&]() {
+      int n = connect_f(fd, addr, addrlen);
+      while (n == -1 && errno == EINTR) {
+        n = connect_f(fd, addr, addrlen);
+      }
+      return n;
+    });
+
+    if (has_old && setsockopt_f) {
+      (void)setsockopt_f(fd, SOL_SOCKET, SO_SNDTIMEO, &old_tv, old_len);
+    } else if (has_old) {
+      (void)::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &old_tv, old_len);
+    }
+
+    return ret;
+  }
+
   // 尝试连接
   int n = connect_f(fd, addr, addrlen);
   if (n == 0) {
@@ -412,34 +516,6 @@ int connect_with_timeout(int fd, const struct sockaddr *addr, socklen_t addrlen,
         },
         winfo);
   }
-
-  // yield 前快速检测：如果 connect 已经完成（常见于本地回环/同机连接），直接返回。
-  // 注意：SO_ERROR==0 也可能仍在连接中，所以需要配合 getpeername 判定。
-  // {
-  //   int sock_err = 0;
-  //   socklen_t sock_len = sizeof(sock_err);
-  //   if (getsockopt_f(fd, SOL_SOCKET, SO_ERROR, &sock_err, &sock_len) == 0) {
-  //     if (sock_err != 0) {
-  //       iom->del_event(fd, zcoroutine::FdContext::kWrite);
-  //       if (timer) {
-  //         timer->cancel();
-  //       }
-  //       errno = sock_err;
-  //       return -1;
-  //     }
-
-  //     sockaddr_storage peer_addr;
-  //     socklen_t peer_len = sizeof(peer_addr);
-  //     if (getpeername(fd, reinterpret_cast<sockaddr *>(&peer_addr),
-  //                     &peer_len) == 0) {
-  //       iom->del_event(fd, zcoroutine::FdContext::kWrite);
-  //       if (timer) {
-  //         timer->cancel();
-  //       }
-  //       return 0;
-  //     }
-  //   }
-  // }
   // 添加写事件监听
   int add_event_ret = iom->add_event(fd, zcoroutine::FdContext::kWrite);
   if (add_event_ret != 0) {
