@@ -1,6 +1,7 @@
 #ifndef ZCOROUTINE_HOOK_H_
 #define ZCOROUTINE_HOOK_H_
 
+#include <cstdint>
 #include <ctime>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -56,6 +57,10 @@ typedef int (*connect_func)(int sockfd, const struct sockaddr *addr,
                             socklen_t addrlen);
 extern connect_func connect_f;
 
+// 带超时的 connect（非标准系统调用，hook内部提供）
+int connect_with_timeout(int fd, const struct sockaddr *addr, socklen_t addrlen,
+                         uint64_t timeout_ms);
+
 typedef int (*accept_func)(int sockfd, struct sockaddr *addr,
                            socklen_t *addrlen);
 extern accept_func accept_f;
@@ -110,6 +115,10 @@ extern ioctl_func ioctl_f;
 // close
 typedef int (*close_func)(int fd);
 extern close_func close_f;
+
+// shutdown
+typedef int (*shutdown_func)(int sockfd, int how);
+extern shutdown_func shutdown_f;
 
 // setsockopt/getsockopt
 typedef int (*setsockopt_func)(int sockfd, int level, int optname,

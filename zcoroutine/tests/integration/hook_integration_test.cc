@@ -745,6 +745,141 @@ TEST_F(HookIntegrationTest, ConnectHookNonBlocking) {
   close(listen_fd);
 }
 
+// 测试20.1：connect_with_timeout - 超时生效（环境不支持则跳过）
+TEST_F(HookIntegrationTest, ConnectWithTimeoutTimesOut) {
+  set_hook_enable(true);
+
+  std::atomic<bool> done{false};
+  std::atomic<int> ret{-999};
+  std::atomic<int> err{0};
+
+  auto start = std::chrono::steady_clock::now();
+
+  auto fiber = std::make_shared<Fiber>([&]() {
+    set_hook_enable(true);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GT(fd, 0);
+
+    // 选择一个通常不会立即返回 RST 的地址（可能被路由黑洞），用于触发超时路径。
+    // 注意：不同环境下可能直接返回 ENETUNREACH/EHOSTUNREACH，此时跳过。
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(81);
+    addr.sin_addr.s_addr = inet_addr("10.255.255.1");
+
+    int r = connect_with_timeout(fd, (struct sockaddr *)&addr, sizeof(addr), 50);
+    ret = r;
+    err = errno;
+    close(fd);
+    done = true;
+  });
+  scheduler_->schedule(fiber);
+
+  auto wait_start = std::chrono::steady_clock::now();
+  while (!done.load() &&
+         (std::chrono::steady_clock::now() - wait_start) <
+             std::chrono::milliseconds(2000)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  ASSERT_TRUE(done.load());
+
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - start)
+                      .count();
+
+  if (ret.load() == -1 &&
+      (err.load() == ENETUNREACH || err.load() == EHOSTUNREACH ||
+       err.load() == ECONNREFUSED)) {
+    GTEST_SKIP() << "Network environment returned immediate error: "
+                 << err.load();
+  }
+  if (ret.load() == 0) {
+    GTEST_SKIP() << "Unexpectedly connected in this environment";
+  }
+
+  EXPECT_EQ(ret.load(), -1);
+  EXPECT_EQ(err.load(), ETIMEDOUT);
+  EXPECT_GE(duration, 30);
+  EXPECT_LT(duration, 1500);
+}
+
+// 测试20.2：shutdown hook - 取消写事件等待，避免write一直挂起到超时
+TEST_F(HookIntegrationTest, ShutdownCancelsWriteWait) {
+  set_hook_enable(true);
+
+  int socks[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, socks), 0);
+
+  // 尽量缩小发送缓冲区，让write更容易进入EAGAIN->yield路径
+  int sndbuf = 1024;
+  setsockopt(socks[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+
+  // 设置较长的写超时：如果shutdown不取消事件，write可能会等到超时
+  struct timeval tv;
+  tv.tv_sec = 2;
+  tv.tv_usec = 0;
+  setsockopt(socks[0], SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+  std::atomic<bool> writer_started{false};
+  std::atomic<bool> writer_done{false};
+  std::atomic<int> writer_errno{0};
+
+  auto start = std::chrono::steady_clock::now();
+
+  auto writer = std::make_shared<Fiber>([&]() {
+    set_hook_enable(true);
+    writer_started = true;
+
+    std::string big(1 << 20, 'x');
+    ssize_t n = write(socks[0], big.data(), big.size());
+    if (n == -1) {
+      writer_errno = errno;
+    }
+    writer_done = true;
+  });
+  scheduler_->schedule(writer);
+
+  // 等writer进入write hook（通常会很快进入等待）
+  auto spin_start = std::chrono::steady_clock::now();
+  while (!writer_started.load() &&
+         (std::chrono::steady_clock::now() - spin_start) <
+             std::chrono::milliseconds(500)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_TRUE(writer_started.load());
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  // 用另一个协程在调度线程上调用shutdown，确保能拿到IoScheduler并执行cancel_event
+  auto shut = std::make_shared<Fiber>([&]() {
+    set_hook_enable(true);
+    (void)shutdown(socks[0], SHUT_WR);
+  });
+  scheduler_->schedule(shut);
+
+  auto wait_start = std::chrono::steady_clock::now();
+  while (!writer_done.load() &&
+         (std::chrono::steady_clock::now() - wait_start) <
+             std::chrono::milliseconds(2000)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  ASSERT_TRUE(writer_done.load());
+
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - start)
+                      .count();
+
+  // 如果没有取消写事件，这里更可能接近2s超时
+  EXPECT_LT(duration, 1500);
+  EXPECT_NE(writer_errno.load(), ETIMEDOUT);
+
+  close(socks[0]);
+  close(socks[1]);
+}
+
 // 测试21：readv/writev hook
 TEST_F(HookIntegrationTest, ReadvWritevHook) {
   set_hook_enable(true);

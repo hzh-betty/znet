@@ -1,4 +1,5 @@
 #include "socket.h"
+#include "hook/hook.h"
 #include "io/io_scheduler.h"
 #include "znet_logger.h"
 #include <errno.h>
@@ -105,7 +106,6 @@ Socket::ptr Socket::accept() {
   clientfd = ::accept4(fd, reinterpret_cast<sockaddr *>(&addr), &len,
                        SOCK_NONBLOCK | SOCK_CLOEXEC);
   if (clientfd == -1 && errno == ENOSYS) {
-    // 内核不支持 accept4，退化为 accept
     clientfd = ::accept(fd, reinterpret_cast<sockaddr *>(&addr), &len);
   }
 #else
@@ -145,8 +145,11 @@ bool Socket::connect(const Address::ptr addr, uint64_t timeout_ms) {
 
   remote_address_ = addr;
 
-  // TODO: 支持超时连接
-  if (::connect(sockfd_, addr->sockaddr_ptr(), addr->sockaddr_len()) != 0) {
+  // 0 表示阻塞：转换为 hook 约定的 -1（不设置超时）
+  const uint64_t hook_timeout =
+      (timeout_ms == 0) ? static_cast<uint64_t>(-1) : timeout_ms;
+  if (::connect_with_timeout(sockfd_, addr->sockaddr_ptr(), addr->sockaddr_len(),
+                             hook_timeout) != 0) {
     ZNET_LOG_ERROR("Socket::connect failed: fd={}, addr={}, errno={}, error={}",
                    sockfd_, addr->to_string(), errno, strerror(errno));
     return false;
@@ -191,21 +194,12 @@ bool Socket::shutdown_write() {
 
   if (::shutdown(sockfd_, SHUT_WR) != 0) {
     const int err = errno;
-    // 共享栈/并发关闭场景下，shutdown 可能返回“未连接/已关闭/无效参数”，
-    // 这些在关闭流程中属于可预期状态，不应打 ERROR。
-    if (err == ENOTCONN || err == EINVAL || err == EBADF) {
-      ZNET_LOG_DEBUG(
-          "Socket::shutdown_write ignored: fd={}, errno={}, error={}", sockfd_,
-          err, strerror(err));
-      is_connected_ = false;
-      return true;
-    }
-
     ZNET_LOG_ERROR("Socket::shutdown_write failed: fd={}, errno={}, error={}",
                    sockfd_, err, strerror(err));
     return false;
   }
 
+  is_connected_ = false;
   ZNET_LOG_DEBUG("Socket::shutdown_write success: fd={}", sockfd_);
   return true;
 }

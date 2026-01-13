@@ -60,6 +60,7 @@ void hook_init() {
   XX(fcntl)
   XX(ioctl)
   XX(close)
+  XX(shutdown)
   XX(setsockopt)
   XX(getsockopt)
 #undef XX
@@ -130,6 +131,7 @@ sendmsg_func sendmsg_f = nullptr;
 fcntl_func fcntl_f = nullptr;
 ioctl_func ioctl_f = nullptr;
 close_func close_f = nullptr;
+shutdown_func shutdown_f = nullptr;
 setsockopt_func setsockopt_f = nullptr;
 getsockopt_func getsockopt_f = nullptr;
 
@@ -503,7 +505,7 @@ int connect_with_timeout(int fd, const struct sockaddr *addr, socklen_t addrlen,
   std::weak_ptr<timer_info> winfo(tinfo);
 
   // 如果设置了超时时间，添加定时器
-  if (timeout_ms != static_cast<uint64_t>(-1)) {
+  if (timeout_ms != static_cast<uint64_t>(-1) && timeout_ms != 0) {
     timer = iom->add_condition_timer(
         timeout_ms,
         [winfo, fd, iom]() {
@@ -669,6 +671,48 @@ int close(int fd) {
   }
 
   return close_f(fd);
+}
+
+// ==================== shutdown ====================
+
+int shutdown(int sockfd, int how) {
+  if (!zcoroutine::is_hook_enabled()) {
+    return shutdown_f(sockfd, how);
+  }
+
+  // 获取文件描述符上下文
+  zcoroutine::SocketStatus::ptr ctx =
+      zcoroutine::StatusTable::GetInstance()->get(sockfd);
+  if (!ctx || ctx->is_closed() || !ctx->is_socket()) {
+    return shutdown_f(sockfd, how);
+  }
+
+  int ret = shutdown_f(sockfd, how);
+  while (ret == -1 && errno == EINTR) {
+    ret = shutdown_f(sockfd, how);
+  }
+
+  // shutdown 成功后，尽量唤醒/取消对应方向的等待事件，避免协程长期挂起
+  if (ret == 0) {
+    zcoroutine::IoScheduler *iom = zcoroutine::IoScheduler::get_this();
+    if (iom) {
+      switch (how) {
+      case SHUT_RD:
+        (void)iom->cancel_event(sockfd, zcoroutine::FdContext::kRead);
+        break;
+      case SHUT_WR:
+        (void)iom->cancel_event(sockfd, zcoroutine::FdContext::kWrite);
+        break;
+      case SHUT_RDWR:
+        (void)iom->cancel_all(sockfd);
+        break;
+      default:
+        break;
+      }
+    }
+  }
+
+  return ret;
 }
 
 // ==================== fcntl ====================
