@@ -1,7 +1,6 @@
 #include "scheduling/work_stealing_queue.h"
 
 #include <chrono>
-#include <mutex>
 #include <utility>
 
 #include "util/zcoroutine_logger.h"
@@ -149,40 +148,28 @@ size_t WorkStealingQueue::wait_pop_batch(Task *out, size_t max_count,
     return 0;
   }
 
-  // 快速路径
+  // 快速路径：队列为空时进入条件变量等待（不持有自旋锁）
   if (approx_size() == 0) {
-    std::unique_lock<Spinlock> lock(lock_);
+    std::unique_lock<std::mutex> wlock(wait_mutex_);
     waiters_.fetch_add(1, std::memory_order_release);
 
+    const auto pred = [this] {
+      return stopped_.load(std::memory_order_relaxed) ||
+             size_.load(std::memory_order_relaxed) > 0;
+    };
+
     if (timeout_ms > 0) {
-      const auto deadline = std::chrono::steady_clock::now() +
-                            std::chrono::milliseconds(timeout_ms);
-      cv_.wait_until(lock, deadline, [this] {
-        return stopped_.load(std::memory_order_relaxed) || !tasks_.empty();
-      });
+      cv_.wait_for(wlock, std::chrono::milliseconds(timeout_ms), pred);
     } else {
-      cv_.wait(lock, [this] {
-        return stopped_.load(std::memory_order_relaxed) || !tasks_.empty();
-      });
+      cv_.wait(wlock, pred);
     }
 
     waiters_.fetch_sub(1, std::memory_order_release);
 
-    // 如果超时返回，队列仍然为空则返回0
-    if (tasks_.empty()) {
+    // 超时/停止且仍无任务
+    if (stopped_.load(std::memory_order_relaxed) && approx_size() == 0) {
       return 0;
     }
-
-    size_t n = 0;
-    while (n < max_count && !tasks_.empty()) {
-      out[n++] = std::move(tasks_.back());
-      tasks_.pop_back();
-    }
-    if (n > 0) {
-      const size_t old = size_.fetch_sub(n, std::memory_order_relaxed);
-      maybe_update_bitmap(old - n);
-    }
-    return n;
   }
 
   return pop_batch(out, max_count);

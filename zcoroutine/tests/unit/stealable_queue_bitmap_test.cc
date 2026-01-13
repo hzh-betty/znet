@@ -47,6 +47,41 @@ TEST_F(StealableQueueBitmapTest, SetClearOutOfRangeNoEffect) {
   EXPECT_EQ(bitmap.find_victim(0), -1);
 }
 
+TEST_F(StealableQueueBitmapTest, TestAndAnyReflectSetClear) {
+  StealableQueueBitmap bitmap(4);
+  EXPECT_FALSE(bitmap.any());
+  EXPECT_FALSE(bitmap.test(0));
+
+  bitmap.set(2);
+  EXPECT_TRUE(bitmap.any());
+  EXPECT_TRUE(bitmap.test(2));
+  EXPECT_FALSE(bitmap.test(1));
+
+  bitmap.clear(2);
+  EXPECT_FALSE(bitmap.any());
+  EXPECT_FALSE(bitmap.test(2));
+}
+
+TEST_F(StealableQueueBitmapTest, FindNonStealablePrefersZeroBits) {
+  StealableQueueBitmap bitmap(4);
+
+  // 初始全 0：从 0 开始应返回 0
+  EXPECT_EQ(bitmap.find_non_stealable(0), 0);
+
+  // 将 0 和 1 设为 1，则从 0 开始应找到 2
+  bitmap.set(0);
+  bitmap.set(1);
+  EXPECT_EQ(bitmap.find_non_stealable(0), 2);
+
+  // 从 3 开始扫描：3 为 0，应返回 3
+  EXPECT_EQ(bitmap.find_non_stealable(3), 3);
+
+  // 全设为 1：找不到 0
+  bitmap.set(2);
+  bitmap.set(3);
+  EXPECT_EQ(bitmap.find_non_stealable(0), -1);
+}
+
 TEST_F(StealableQueueBitmapTest, ExcludesSelfFromVictimSelection) {
   StealableQueueBitmap bitmap(8);
 

@@ -47,6 +47,22 @@ public:
   void clear(size_t worker_id);
 
   /**
+   * @brief 测试某个 worker 位是否为 1（可窃取）
+   */
+  bool test(size_t worker_id) const;
+
+  /**
+   * @brief 判断位图是否存在任意可窃取 worker
+   */
+  bool any() const;
+
+  /**
+   * @brief 从 start 开始扫描，返回一个位为 0 的 worker（倾向于“更空闲/未达到可窃取阈值”）。
+   * @return worker id；若未找到返回 -1
+   */
+  int find_non_stealable(size_t start) const;
+
+  /**
    * @brief 从 (self_id + 1) % N 开始循环扫描，返回一个可窃取 victim
    * @param self_id 当前 worker id
    * @return victim id；若未找到返回 -1
@@ -66,6 +82,8 @@ private:
    * @return victim id；若未找到返回 -1
    */
   int find_in_range(size_t from, size_t to, size_t self_id) const;
+
+  int find_zero_in_range(size_t from, size_t to) const;
 
   size_t worker_count_{0};
   std::vector<CacheLineU64> words_;

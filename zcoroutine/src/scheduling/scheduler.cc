@@ -12,20 +12,15 @@
 namespace zcoroutine {
 
 Scheduler::Scheduler(int thread_count, std::string name, bool use_shared_stack)
-    : name_(std::move(name)), thread_count_(thread_count),
-      stopping_(true), active_thread_count_(0), idle_thread_count_(0),
-  work_queues_(static_cast<size_t>(thread_count_ + 1)),
+    : name_(std::move(name)), thread_count_(thread_count), stopping_(true),
+      active_thread_count_(0), idle_thread_count_(0),
+      work_queues_(static_cast<size_t>(thread_count_)),
       stealable_bitmap_(static_cast<size_t>(thread_count_)),
-    main_queue_(std::make_unique<WorkStealingQueue>()),
-    use_shared_stack_(use_shared_stack) {
+      use_shared_stack_(use_shared_stack) {
   // 共享栈将在每个worker线程的run()中独立创建
   ZCOROUTINE_LOG_INFO(
       "Scheduler[{}] created with thread_count={}, shared_stack={}", name_,
       thread_count_, use_shared_stack_);
-
-  // 注册本 Scheduler 的主队列（用于外部线程投递任务）。
-  // 不能使用 ThreadContext::get_work_queue()，否则同一线程启动多个 Scheduler 会共享同一 TLS 队列。
-  register_work_queue(thread_count_, main_queue_.get());
 }
 
 Scheduler::~Scheduler() {
@@ -40,43 +35,52 @@ void Scheduler::enqueue(Task &&task) {
     return;
   }
 
-  // 若当前线程正在运行本 Scheduler（即 worker 线程），优先投递到本线程本地队列。
+  // 若当前线程正在运行本 Scheduler（即 worker
+  // 线程），优先投递到本线程本地队列。
   WorkStealingQueue *q = nullptr;
   if (Scheduler::get_this() == this) {
     q = ThreadContext::get_work_queue();
   }
+
+  // 外部线程/IO 线程投递：优先选择位图中为 0 的
+  // worker（通常表示未达到“可窃取”阈值）。
   if (!q) {
-    q = main_queue_.get();
-  }
-  if (!q) {
-    ZCOROUTINE_LOG_ERROR("Scheduler[{}] enqueue failed: main queue not initialized", name_);
-    return;
-  }
+    const size_t start = static_cast<size_t>(
+        rr_enqueue_.fetch_add(1, std::memory_order_relaxed));
+    const int preferred = stealable_bitmap_.find_non_stealable(start);
 
-  q->push(std::move(task));
-  pending_tasks_.fetch_add(1, std::memory_order_relaxed);
+    // 1) 优先：位图为 0 的 worker
+    if (preferred >= 0) {
+      q = get_next_queue(preferred);
+    }
 
-  // 外部线程/IO 线程通常会投递到 main_queue_。
-  // worker 线程可能正阻塞在各自的本地队列上，若不主动唤醒，会造成最多一个 wait 超时(100ms) 的额外延迟。
-  if (q == main_queue_.get()) {
-    tickle();
-  }
-}
-
-void Scheduler::tickle() {
-  if (idle_thread_count_.load(std::memory_order_relaxed) <= 0) {
-    return;
-  }
-
-  for (int i = 0; i < thread_count_; ++i) {
-    if (auto *q = get_next_queue(i)) {
-      q->notify_one();
+    // 2) fallback：扫描找到任意已注册队列（可能处于启动/退出边界）
+    if (!q) {
+      const int n = thread_count_;
+      for (int k = 0; k < n; ++k) {
+        const int idx = (static_cast<int>(start) + k) % n;
+        if (auto *cand = get_next_queue(idx)) {
+          q = cand;
+          break;
+        }
+      }
     }
   }
+
+  if (!q) {
+    ZCOROUTINE_LOG_ERROR(
+        "Scheduler[{}] enqueue failed: no available worker queue", name_);
+    return;
+  }
+
+  // 先增加待处理计数，再入队：避免 stop() 期间 schedule_loop 因
+  // pending_tasks_=0 提前退出。
+  pending_tasks_.fetch_add(1, std::memory_order_relaxed);
+  q->push(std::move(task));
 }
 
 void Scheduler::register_work_queue(int worker_id, WorkStealingQueue *queue) {
-  if (worker_id < 0 || worker_id > thread_count_) {
+  if (worker_id < 0 || worker_id >= thread_count_) {
     return;
   }
   work_queues_[static_cast<size_t>(worker_id)].store(queue,
@@ -86,7 +90,7 @@ void Scheduler::register_work_queue(int worker_id, WorkStealingQueue *queue) {
 }
 
 WorkStealingQueue *Scheduler::get_next_queue(int worker_id) const {
-  if (worker_id < 0 || worker_id > thread_count_) {
+  if (worker_id < 0 || worker_id >= thread_count_) {
     return nullptr;
   }
   return work_queues_[static_cast<size_t>(worker_id)].load(
@@ -94,8 +98,8 @@ WorkStealingQueue *Scheduler::get_next_queue(int worker_id) const {
 }
 
 void Scheduler::stop_work_queues() {
-  // 停止所有工作队列，包括主线程队列
-  for (int i = 0; i <= thread_count_; ++i) {
+  // 停止所有工作队列
+  for (int i = 0; i < thread_count_; ++i) {
     if (auto *q = get_next_queue(i)) {
       q->stop();
     }
@@ -114,6 +118,9 @@ void Scheduler::start() {
   ZCOROUTINE_LOG_INFO("Scheduler[{}] starting with {} threads...", name_,
                       thread_count_);
 
+  // 重置启动屏障计数（防止 stop/start 复用时残留）
+  registered_worker_queues_.store(0, std::memory_order_relaxed);
+
   // 创建工作线程
   threads_.reserve(thread_count_);
   for (int i = 0; i < thread_count_; ++i) {
@@ -127,6 +134,16 @@ void Scheduler::start() {
       ZCOROUTINE_LOG_DEBUG("Scheduler[{}] worker thread {} exited", name_, i);
     });
     threads_.push_back(std::move(thread));
+  }
+
+  // 等待所有 worker work queue 注册完成，避免 start() 返回后立即 schedule()
+  // 失败。
+  if (thread_count_ > 0) {
+    std::unique_lock<std::mutex> lock(start_mutex_);
+    start_cv_.wait(lock, [this] {
+      return registered_worker_queues_.load(std::memory_order_acquire) >=
+             thread_count_;
+    });
   }
 
   ZCOROUTINE_LOG_INFO("Scheduler[{}] started successfully with {} threads",
@@ -209,6 +226,10 @@ void Scheduler::run() {
     WorkStealingQueue *q_ptr = ThreadContext::get_work_queue();
     register_work_queue(id, q_ptr);
 
+    // 通知 start()：本 worker 队列已可用。
+    registered_worker_queues_.fetch_add(1, std::memory_order_release);
+    start_cv_.notify_one();
+
     // 绑定全局位图（H/L 水位，避免每次 push/pop 触发位图写入）。
     // 经验值：H 要明显大于批处理大小，L 要明显小于 H。
     static constexpr size_t kHighWatermark = 32;
@@ -270,7 +291,6 @@ void Scheduler::schedule_loop() {
   const int self_id = ThreadContext::get_worker_id();
   WorkStealingQueue *local_queue = ThreadContext::get_work_queue();
   const int worker_count = thread_count_;
-  const int main_queue_id = thread_count_;
 
   while (true) {
     // 如果正在停止且无待处理任务，则退出循环
@@ -286,43 +306,11 @@ void Scheduler::schedule_loop() {
     }
     if (batch_count > 0) {
       ZCOROUTINE_LOG_DEBUG(
-          "Scheduler[{}] worker_id={} fetched {} tasks from local queue",
-          name_, self_id, batch_count);
+          "Scheduler[{}] worker_id={} fetched {} tasks from local queue", name_,
+          self_id, batch_count);
     }
 
-    // 2) 本地为空则尝试批量窃取
-
-    // 2.1) 优先处理主线程队列（外部线程投递任务时会进入该队列）。
-    // 若主队列有任务且本地为空：直接 swap。
-    if (batch_count == 0 && self_id >= 0) {
-      if (WorkStealingQueue *main_q = get_next_queue(main_queue_id)) {
-        if (local_queue && local_queue->approx_size() == 0) {
-          const size_t moved = local_queue->swap_if_empty(*main_q);
-          if (moved > 0) {
-            batch_count = local_queue->pop_batch(tasks, kBatchSize);
-            ZCOROUTINE_LOG_DEBUG(
-                "Scheduler[{}] worker_id={} swapped {} tasks from main queue",
-                name_, self_id, batch_count);
-          }
-        }
-
-        // fallback：若无法 swap（例如本地非空），再做小批量 steal
-        if (batch_count == 0 && main_q->approx_size() > 0) {
-          Task stolen[kStealBatch];
-          const size_t n = main_q->steal_batch(stolen, kStealBatch);
-          if (n > 0) {
-            ZCOROUTINE_LOG_DEBUG(
-                "Scheduler[{}] worker_id={} stole {} tasks from main queue",
-                name_, self_id, n);
-            for (size_t i = 0; i < n && batch_count < kBatchSize; ++i) {
-              tasks[batch_count++] = std::move(stolen[i]);
-            }
-          }
-        }
-      }
-    }
-
-    // 2.2) 再从其他 worker 队列窃取：使用全局位图引导 victim 选择。
+    // 2) 本地为空则尝试批量窃取：使用全局位图引导 victim 选择。
     if (batch_count == 0 && worker_count > 1 && self_id >= 0) {
       const int victim = stealable_bitmap_.find_victim(self_id);
       if (victim >= 0) {
@@ -348,8 +336,10 @@ void Scheduler::schedule_loop() {
     // 3) 没有任务则在本地队列上等待
     if (batch_count == 0) {
       idle_thread_count_.fetch_add(1, std::memory_order_relaxed);
-      // 再次尝试从本地队列等待取任务, 避免遗漏新入队任务
-      batch_count = local_queue->wait_pop_batch(tasks, kBatchSize, 100);
+
+      // 这里用短超时轮询来兼顾“被动等待本地投递”和“周期性尝试 steal”。
+      const int timeout_ms = stealable_bitmap_.any() ? 1 : 100;
+      batch_count = local_queue->wait_pop_batch(tasks, kBatchSize, timeout_ms);
       idle_thread_count_.fetch_sub(1, std::memory_order_relaxed);
       if (batch_count == 0) {
         continue;
@@ -415,13 +405,10 @@ void Scheduler::schedule_loop() {
                                name_, fiber->name(), fiber->id());
         }
       } else if (task.callback) {
-        // 执行回调函数
-        ZCOROUTINE_LOG_DEBUG(
-            "Scheduler[{}] executing callback, active_threads={}", name_,
-            active);
-
+        auto cb = std::move(task.callback);
+        task.callback = nullptr;
         try {
-          task.callback();
+          cb();
         } catch (const std::exception &e) {
           ZCOROUTINE_LOG_ERROR("Scheduler[{}] callback exception: error={}",
                                name_, e.what());

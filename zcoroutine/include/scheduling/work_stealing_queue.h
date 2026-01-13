@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
+#include <mutex>
 
 #include "scheduling/task_queue.h"
 #include "scheduling/stealable_queue_bitmap.h"
@@ -27,7 +28,7 @@ public:
 
   /**
    * @brief 绑定可窃取队列提示位图，用于在队列规模跨越阈值时上报“可窃取”状态。
-   * @note 仅 worker 本地队列需要绑定；main_queue_ 可不绑定。
+    * @note 通常仅 worker 本地队列需要绑定。
    */
   void bind_bitmap(StealableQueueBitmap *bitmap, int worker_id,
                    size_t high_watermark, size_t low_watermark);
@@ -91,7 +92,8 @@ private:
   void maybe_update_bitmap(size_t new_size);
 
   mutable Spinlock lock_;
-  std::condition_variable_any cv_;
+  std::mutex wait_mutex_;
+  std::condition_variable cv_;
   std::deque<Task> tasks_;
 
   std::atomic<size_t> size_{0};

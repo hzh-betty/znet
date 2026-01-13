@@ -2,8 +2,10 @@
 #define ZCOROUTINE_SCHEDULER_H_
 
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -127,11 +129,6 @@ private:
   void enqueue(Task &&task);
 
   /**
-   * @brief 唤醒空闲 worker（用于外部线程投递到 main_queue_ 的场景）
-   */
-  void tickle();
-
-  /**
    * @brief 内部方法：获取指定worker的工作队列指针
    * @param worker_id worker线程ID
    * @return 工作队列指针，若无则返回nullptr
@@ -170,19 +167,20 @@ protected:
   std::atomic<uint32_t> rr_enqueue_{0};
   std::atomic<size_t> pending_tasks_{0};
 
+  // 启动屏障：确保 start() 返回前，所有 worker 的 work queue 已注册。
+  mutable std::mutex start_mutex_;
+  std::condition_variable start_cv_;
+  std::atomic<int> registered_worker_queues_{0};
+
   std::atomic<bool> stopping_;           // 停止标志
   std::atomic<int> active_thread_count_; // 活跃线程数
   std::atomic<int> idle_thread_count_;   // 空闲线程数
 
   std::vector<std::atomic<WorkStealingQueue *>>
-      work_queues_; // 队列指针注册表：0..thread_count_-1 为 worker，thread_count_ 为主线程
+      work_queues_; // 队列指针注册表：0..thread_count_-1 为 worker
 
   // 可窃取队列提示位图：用于引导非随机的任务窃取选择。
   StealableQueueBitmap stealable_bitmap_;
-
-  // 每个 Scheduler 独立拥有的主线程队列（用于外部线程投递任务），
-  // 避免多个 Scheduler 在同一线程启动时共享 ThreadContext::work_queue 导致串队列。
-  std::unique_ptr<WorkStealingQueue> main_queue_;
 
   // 共享栈相关
   bool use_shared_stack_ = false; // 是否使用共享栈模式
